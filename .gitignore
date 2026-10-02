@@ -1,0 +1,7 @@
+node_modules
+dist
+*.log
+.vercel
+# Secrets: every .env file except the documented template
+.env*
+!.env.example

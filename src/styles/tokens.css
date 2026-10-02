@@ -1,0 +1,276 @@
+/* Design tokens. Every color, size and motion value used by components lives here.
+   Rules for using them are in docs/DESIGN.md. */
+
+:root {
+  /* Typography */
+  --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace;
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+  --msg-font: 15px;
+  --msg-line: 1.7;
+
+  /* Spacing (4px grid) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* Radii */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 22px;
+  --r-full: 999px;
+
+  /* Layout */
+  --sidebar-w: 272px;
+  --rail-w: 60px;
+  --panel-w: 320px;
+  --header-h: 56px;
+  --content-w: 768px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 280ms;
+
+  /* Layering — in-page stacking only. Modal <dialog>s and the toast region live in the
+     browser top layer, which always paints above these. See docs/DESIGN.md "Layering". */
+  --z-drawer: 40; /* off-canvas sidebar / generation panel (backdrop is z-drawer - 1) */
+  --z-popover: 50; /* menus, model picker (portaled to <body>) */
+  --z-tooltip: 70; /* CSS tooltips, above popovers they may sit inside */
+}
+
+/* Dark (default): layered charcoal surfaces */
+:root,
+[data-theme="dark"] {
+  --bg-app: #0b0b0d;
+  --bg-sidebar: #111113;
+  --bg-surface: #151518;
+  --bg-elevated: #1c1c20;
+  --bg-input: #161619;
+  --bg-hover: rgba(255, 255, 255, 0.045);
+  --bg-active: rgba(255, 255, 255, 0.08);
+  --bg-selected: rgba(255, 255, 255, 0.065);
+  --bg-user-msg: #1d1d21;
+  --bg-code: #0e0e11;
+  --glow: rgba(233, 180, 76, 0.045);
+
+  --border-subtle: rgba(255, 255, 255, 0.055);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text-primary: #ececef;
+  --text-secondary: #a4a4ad;
+  --text-tertiary: #8a8a94; /* >= 4.7:1 on every surface (WCAG AA) */
+  --text-inverse: #0b0b0d;
+
+  --accent: #e9b44c;
+  --accent-hover: #f2c56a;
+  --accent-soft: rgba(233, 180, 76, 0.12);
+  --accent-text: #f0c46c;
+
+  --danger: #f07670;
+  --danger-soft: rgba(240, 118, 112, 0.1);
+  --danger-border: rgba(240, 118, 112, 0.28);
+  --success: #5fcf8c;
+  --success-soft: rgba(95, 207, 140, 0.12);
+  --warning: #e9b44c;
+
+  --btn-primary-bg: #ececef;
+  --btn-primary-fg: #0b0b0d;
+  --btn-primary-hover: #ffffff;
+
+  --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px rgba(233, 180, 76, 0.6);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-popover: 0 16px 40px -12px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--border);
+  --shadow-composer: 0 10px 40px -16px rgba(0, 0, 0, 0.8);
+  --backdrop: rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+
+  /* Component surfaces and controls (tokenized so every theme can restyle them) */
+  --bg-elevated-hover: #232328;
+  --bg-tooltip: #26262b;
+  --fg-tooltip: #ececef;
+  --bg-toast: #222227;
+  --bg-composer-focus: #17171b;
+  --border-focus: rgba(255, 255, 255, 0.2);
+  --control-track: #2b2b31;
+  --switch-thumb: #a4a4ad;
+  --switch-thumb-on: #141416;
+  --slider-thumb: #f4f4f5;
+  --slider-thumb-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  --send-disabled-bg: #2a2a2f;
+  --drop-overlay: rgba(11, 11, 13, 0.88);
+  --shadow-drawer: rgba(0, 0, 0, 0.8);
+  --selection: rgba(233, 180, 76, 0.28);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+  --skeleton-base: rgba(255, 255, 255, 0.04);
+  --skeleton-shine: rgba(255, 255, 255, 0.09);
+  --accent-border: rgba(233, 180, 76, 0.35);
+  --accent-focus: rgba(233, 180, 76, 0.5);
+  --accent-focus-glow: rgba(233, 180, 76, 0.12);
+  --accent-ring: rgba(233, 180, 76, 0.6);
+  --accent-underline: rgba(240, 196, 108, 0.35);
+  --danger-contrast: #1a0807;
+  --danger-hover: #f68a85;
+  --logo-bg: #18181b;
+  --logo-border: rgba(255, 255, 255, 0.08);
+  --logo-mark: #e9b44c;
+
+  /* Markdown */
+  --code-inline-bg: rgba(255, 255, 255, 0.07);
+  --code-head-bg: rgba(255, 255, 255, 0.02);
+  --table-head-bg: rgba(255, 255, 255, 0.03);
+
+  /* Syntax highlighting: all >= 4.5:1 on --bg-code (checked by src/styles/tokens.test.ts) */
+  --hl-comment: #8b8b96;
+  --hl-keyword: #f0c46c;
+  --hl-string: #a8d18d;
+  --hl-number: #f0a27a;
+  --hl-title: #8cc4ec;
+  --hl-type: #cdaaf2;
+  --hl-attr: #e3c9a0;
+  --hl-tag: #f08f8a;
+  --hl-meta: #9a9aa6;
+  --hl-deletion-bg: rgba(240, 118, 112, 0.1);
+  --hl-addition-bg: rgba(95, 207, 140, 0.08);
+}
+
+/* Black: true-black base for OLED screens */
+[data-theme="black"] {
+  --bg-app: #000000;
+  --bg-sidebar: #070708;
+  --bg-surface: #0d0d0f;
+  --bg-elevated: #141417;
+  --bg-input: #0c0c0e;
+  --bg-user-msg: #151518;
+  --bg-code: #08080a;
+  --glow: rgba(233, 180, 76, 0.03);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border: rgba(255, 255, 255, 0.08);
+  --focus-ring: 0 0 0 2px #000, 0 0 0 4px rgba(233, 180, 76, 0.6);
+  --bg-composer-focus: #101012;
+  --bg-elevated-hover: #1c1c20;
+  --drop-overlay: rgba(0, 0, 0, 0.9);
+}
+
+/* White + Gold: white canvas, warm-gray surfaces, charcoal text, gold as an accent only.
+   Every text token is >= 4.5:1 on every surface (src/styles/tokens.test.ts). */
+[data-theme="light"] {
+  --bg-app: #ffffff;
+  --bg-sidebar: #f6f4ef;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #faf8f4;
+  --bg-hover: rgba(60, 45, 10, 0.05);
+  --bg-active: rgba(60, 45, 10, 0.09);
+  --bg-selected: rgba(60, 45, 10, 0.07);
+  --bg-user-msg: #f2efe8;
+  --bg-code: #faf8f3;
+  --glow: rgba(201, 151, 31, 0.07);
+
+  --border-subtle: rgba(40, 30, 10, 0.07);
+  --border: rgba(40, 30, 10, 0.12);
+  --border-strong: rgba(40, 30, 10, 0.22);
+
+  --text-primary: #1c1b19;
+  --text-secondary: #55524b;
+  --text-tertiary: #6b665c;
+  --text-inverse: #ffffff;
+
+  --accent: #b8860b;
+  --accent-hover: #a3770a;
+  --accent-soft: rgba(184, 134, 11, 0.1);
+  --accent-text: #7d5a0c;
+
+  --danger: #b8322b;
+  --danger-soft: rgba(184, 50, 43, 0.07);
+  --danger-border: rgba(184, 50, 43, 0.28);
+  --success: #1d7a44;
+  --success-soft: rgba(29, 122, 68, 0.12);
+  --warning: #8a5a00;
+
+  --btn-primary-bg: #1c1b19;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover: #000000;
+
+  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px rgba(184, 134, 11, 0.7);
+  --shadow-sm: 0 1px 2px rgba(40, 30, 10, 0.12);
+  --shadow-popover: 0 16px 40px -14px rgba(40, 30, 10, 0.22), 0 0 0 1px var(--border);
+  --shadow-composer: 0 10px 34px -18px rgba(40, 30, 10, 0.3);
+  --backdrop: rgba(28, 27, 25, 0.32);
+  color-scheme: light;
+
+  --bg-elevated-hover: #f3f0e9;
+  --bg-tooltip: #1c1b19;
+  --fg-tooltip: #ffffff;
+  --bg-toast: #ffffff;
+  --bg-composer-focus: #ffffff;
+  --border-focus: rgba(184, 134, 11, 0.45);
+  --control-track: #e2ddd2;
+  --switch-thumb: #ffffff;
+  --switch-thumb-on: #ffffff;
+  --slider-thumb: #ffffff;
+  --slider-thumb-shadow: 0 1px 3px rgba(40, 30, 10, 0.35), 0 0 0 1px rgba(40, 30, 10, 0.12);
+  --send-disabled-bg: #ebe7de;
+  --drop-overlay: rgba(255, 255, 255, 0.9);
+  --shadow-drawer: rgba(40, 30, 10, 0.25);
+  --selection: rgba(201, 151, 31, 0.25);
+  --scrollbar-thumb: rgba(40, 30, 10, 0.16);
+  --scrollbar-thumb-hover: rgba(40, 30, 10, 0.28);
+  --skeleton-base: rgba(40, 30, 10, 0.05);
+  --skeleton-shine: rgba(40, 30, 10, 0.1);
+  --accent-border: rgba(184, 134, 11, 0.4);
+  --accent-focus: rgba(184, 134, 11, 0.55);
+  --accent-focus-glow: rgba(184, 134, 11, 0.14);
+  --accent-ring: rgba(184, 134, 11, 0.7);
+  --accent-underline: rgba(125, 90, 12, 0.4);
+  --danger-contrast: #ffffff;
+  --danger-hover: #a12a24;
+  --logo-bg: #1c1b19;
+  --logo-border: rgba(0, 0, 0, 0);
+  --logo-mark: #d9a53a;
+
+  --code-inline-bg: rgba(60, 45, 10, 0.06);
+  --code-head-bg: rgba(60, 45, 10, 0.03);
+  --table-head-bg: rgba(60, 45, 10, 0.035);
+
+  --hl-comment: #6b6760;
+  --hl-keyword: #8a5a00;
+  --hl-string: #2d6a2e;
+  --hl-number: #a1461b;
+  --hl-title: #1f5f99;
+  --hl-type: #6e3fa3;
+  --hl-attr: #75562a;
+  --hl-tag: #b0352e;
+  --hl-meta: #6b6760;
+  --hl-deletion-bg: rgba(184, 50, 43, 0.08);
+  --hl-addition-bg: rgba(29, 122, 68, 0.08);
+}
+
+[data-font-size="small"] {
+  --msg-font: 14px;
+  --msg-line: 1.65;
+}
+[data-font-size="large"] {
+  --msg-font: 16.5px;
+  --msg-line: 1.72;
+}
+[data-chat-width="wide"] {
+  --content-w: 960px;
+}

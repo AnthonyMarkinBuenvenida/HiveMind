@@ -1,0 +1,8 @@
+# Never upload local secrets or build artifacts; Vercel builds from source and reads secrets from its env vars.
+.env
+.env.*
+!.env.example
+node_modules
+dist
+.git
+*.log

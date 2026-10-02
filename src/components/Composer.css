@@ -1,0 +1,199 @@
+.composer-wrap {
+  flex: none;
+  width: 100%;
+  max-width: calc(var(--content-w) + 2 * var(--sp-6));
+  margin: 0 auto;
+  padding: 0 var(--sp-6) max(var(--sp-3), env(safe-area-inset-bottom));
+}
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-2xl);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-composer);
+  transition: border-color var(--dur-fast), background var(--dur-fast);
+}
+.composer:hover {
+  border-color: var(--border-strong);
+}
+.composer:focus-within {
+  border-color: var(--border-focus);
+  background: var(--bg-composer-focus);
+}
+.composer.is-dragging {
+  border-color: var(--accent);
+}
+.composer-input {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  padding: 16px 18px 6px;
+  border: 0;
+  background: none;
+  resize: none;
+  font-size: var(--msg-font);
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+.composer-input:focus-visible {
+  box-shadow: none;
+}
+.composer-input::placeholder {
+  color: var(--text-tertiary);
+}
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 10px;
+}
+.composer-spacer {
+  flex: 1;
+}
+
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px 0 10px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
+}
+.chip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.chip[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+}
+.chip-static {
+  cursor: default;
+  border-style: dashed;
+  color: var(--text-tertiary);
+}
+.chip-static:hover {
+  background: none;
+  color: var(--text-tertiary);
+}
+
+.send-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+  transition: background var(--dur-fast), opacity var(--dur-fast), transform var(--dur-fast) var(--ease);
+}
+.send-btn:hover:not(:disabled) {
+  background: var(--btn-primary-hover);
+}
+.send-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.send-btn:disabled {
+  background: var(--send-disabled-bg);
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+.send-btn.is-stop {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+}
+.send-btn.is-stop:hover {
+  background: var(--bg-elevated-hover);
+}
+
+.composer-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 12px 0;
+  list-style: none;
+}
+.composer-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  height: 44px;
+  padding: 0 4px 0 10px;
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+.composer-file > svg {
+  flex: none;
+  color: var(--accent);
+}
+.composer-file-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.composer-file-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+.composer-file-size {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+.composer-drop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: var(--drop-overlay);
+  color: var(--accent-text);
+  font-weight: 500;
+  pointer-events: none;
+}
+.composer-hint {
+  margin: 8px 0 0;
+  text-align: center;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .composer-wrap {
+    padding: 0 var(--sp-3) max(var(--sp-2), env(safe-area-inset-bottom));
+  }
+  .composer {
+    border-radius: var(--r-xl);
+  }
+  .composer-input {
+    padding: 14px 14px 4px;
+    font-size: 16px; /* prevents iOS zoom on focus */
+  }
+  .composer-bar {
+    padding: 4px 8px 8px;
+  }
+  .composer-hint {
+    display: none;
+  }
+}

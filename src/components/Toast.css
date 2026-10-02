@@ -1,0 +1,49 @@
+/* Rendered as popover="manual" (top layer). Reset the UA popover box styles. */
+.toasts:popover-open {
+  position: fixed;
+  inset: max(16px, env(safe-area-inset-top)) auto auto 50%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+  color: inherit;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--r-lg);
+  background: var(--bg-toast);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-popover);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  pointer-events: auto;
+  animation: toast-in var(--dur) var(--ease);
+}
+.toast > svg {
+  flex: none;
+  color: var(--text-secondary);
+}
+.toast-success > svg {
+  color: var(--success);
+}
+.toast-error > svg {
+  color: var(--danger);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
