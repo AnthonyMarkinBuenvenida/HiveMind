@@ -6,13 +6,12 @@
 import { errorDetail, UpstreamError } from "./upstream.mjs";
 
 // Every OpenRouter key the server knows, in fallback order. A model may name its own first choice
-// (`keyEnv` in server/registry.mjs OVERRIDES, e.g. the DeepSeek models); the others are tried when that key fails
+// (`keyEnv` in server/registry.mjs OVERRIDES); the others are tried when that key fails
 // for a key-specific reason.
 const KEY_ENVS = [
   { env: "OPENROUTER_API_KEY", name: "main" },
   { env: "OPENROUTER_API_KEY_BACKUP", name: "backup" },
   { env: "OPENROUTER_API_KEY_BACKUP_2", name: "second backup" },
-  { env: "OPENROUTER_DEEPSEEK_API_KEY", name: "DeepSeek" },
 ];
 
 function config() {

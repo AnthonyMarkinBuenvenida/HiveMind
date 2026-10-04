@@ -56,7 +56,7 @@ Message column max width is `--content-w` (768, or 960 when "Wide"). Use `100dvh
 - **Empty / loading / error**: every data view has all three. Errors are inline next to where the action happened, with a retry when one makes sense.
 - **Dialog initial focus**: mark the element with `data-autofocus` (React's `autoFocus` runs before `showModal()`). Destructive confirmations focus Cancel.
 - **Long waits are explained**: while waiting for the first token the message shows elapsed seconds and, after 12 s, a note that the model is busy. A response stopped by the host time limit shows "Paused at the time limit" (accent, not error styling) with Continue.
-- **Routing is subtle**: an Auto reply shows the model that answered plus a small "Auto · Provider" chip; its one-sentence reason (and, with *Show routing details*, the full decision) opens on click. A manual model's failure offers *Switch to Auto*; nothing switches silently.
+- **Routing is subtle**: an Auto reply shows the model that answered plus a small "Auto · Provider" chip; its one-sentence reason (and, with *Show routing details*, the full decision) opens on click. A manual model's failure offers *Switch to Auto*; nothing switches silently. When a model fails before answering (only reasoning shown), the reply is cleared and the waiting row says *"The model is busy. Trying another available model…"* until the next model starts — the user never sees two models in one reply.
 - **Token presets** only show values the active model supports (`maxOutput` from `/api/models`); the slider steps by 1,000 so 50,000 is reachable exactly.
 
 ## Rendering model output

@@ -324,149 +324,192 @@ async function streamCompletion(req, res, release) {
   const maxTimer = setTimeout(() => abortAll("max_duration"), limitMs);
   const deadline = Date.now() + headersTimeoutMs();
 
-  // ----- Try candidates until one starts streaming -----
+  // ----- Try candidates; stream the first that works -----
+  // Per attempt, what has reached the browser decides whether another model may take over:
+  //   A  nothing yet            → fall back silently
+  //   B  reasoning only         → fall back: a "reset" event (sent only when another model actually
+  //                                starts) makes the browser discard the attempt
+  //   C  answer text started    → no fallback: an error ends the reply (never mix two models' answers)
+  //   D  finished               → done
   const attempts = [];
   const maxAttempts = auto || manualFallback ? MAX_ATTEMPTS() : 1;
   const excludedProviders = new Set(); // provider-wide failures (bad key, unreachable)
   const excludedFree = new Set(); // providers whose shared free quota ran out
-  let selected = null;
+  const streamEnd = Date.now() + limitMs - 15_000; // latest time a fallback attempt may still start
+  let headersSent = false;
+  let pendingReset = null; // set when a model failed after reasoning; sent when the next attempt starts
   let lastErr = null;
-  for (const entry of order) {
-    if (attempts.length >= maxAttempts || abortCause) break;
-    const model = entry.model;
-    const provider = PROVIDERS[model.provider];
-    if (excludedProviders.has(model.provider) || (model.free && excludedFree.has(model.provider))) continue;
-    const remaining = deadline - Date.now();
-    if (remaining <= 1000) break;
-    // Back off before retrying the same provider after a provider-side failure.
-    const prev = attempts.at(-1);
-    if (prev && prev.provider === model.provider && prev.kind === "overloaded") await new Promise((r) => setTimeout(r, Math.min(2000, 300 * 2 ** (attempts.length - 1))));
-
-    const maxTokens = planMaxTokens(model, body.maxTokens, promptChars);
-    if (maxTokens < 256) {
-      attempts.push({ model: model.id, provider: model.provider, ok: false, error: "context too small", kind: "rejected", ms: 0 });
-      continue;
-    }
-    const ctrl = new AbortController();
-    current = ctrl;
-    const started = Date.now();
-    let timedOut = false;
-    let timer;
-    const arm = (ms) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        timedOut = true;
-        ctrl.abort();
-      }, ms);
-    };
-    arm(auto || manualFallback ? Math.min(attemptTimeoutMs(), remaining) : remaining);
-    try {
-      const reply = await provider.open({
-        model,
-        messages,
-        system,
-        temperature: clamp(body.temperature, 0, 2, 0.6),
-        topP: clamp(body.topP, 0.01, 1, 0.95),
-        maxTokens,
-        effort: effortFor(model, decision.task.tier, body.thinking),
-        signal: ctrl.signal,
-      });
-      const iterator = reply.events[Symbol.asyncIterator]();
-      // Nothing has been sent to the browser yet, so a failure up to the first event can still fall back.
-      const first = await firstEvent(iterator, () => arm(IDLE_TIMEOUT_MS));
-      clearTimeout(timer);
-      health.recordSuccess(model.id, { ttftMs: Date.now() - started });
-      attempts.push({ model: model.id, provider: model.provider, ok: true, ms: Date.now() - started });
-      selected = { entry, provider, reply, iterator, first, ctrl };
-      break;
-    } catch (err) {
-      clearTimeout(timer);
-      if (abortCause) break;
-      const error = timedOut ? Object.assign(new Error("attempt timeout"), { attemptTimeout: true }) : err;
-      const f = failureKind(error);
-      health.recordFailure(model.id, f.kind);
-      if (f.provider) {
-        health.recordProviderFailure(model.provider, f.provider.kind, { scope: f.provider.scope });
-        (f.provider.scope === "free" ? excludedFree : excludedProviders).add(model.provider);
-      }
-      attempts.push({ model: model.id, provider: model.provider, ok: false, error: mapUpstreamError(error, provider).code, kind: f.kind, ms: Date.now() - started });
-      lastErr = { error, provider };
-      if (!f.retryable) break;
-    }
-  }
-
-  if (!selected) {
-    clearTimeout(maxTimer);
-    if (abortCause === "client") return;
-    if (abortCause === "max_duration") throw new HttpError(504, "No model started responding before the time limit. Try again.", "upstream_timeout");
-    const mapped = lastErr ? mapUpstreamError(lastErr.error, lastErr.provider) : new HttpError(503, "No model is available right now. Try again shortly.", "upstream_busy");
-    if (attempts.length > 1) {
-      const names = attempts.map((a) => models.find((m) => m.id === a.model)?.label ?? a.model).join(", ");
-      mapped.message = `No available model could answer right now (tried ${names}). ${mapped.message}`;
-    }
-    throw mapped;
-  }
-
-  // ----- Stream the selected reply -----
-  const { entry, provider, iterator, first, ctrl } = selected;
-  current = ctrl;
-  const fallbackFrom = attempts.filter((a) => !a.ok).map((a) => models.find((m) => m.id === a.model)?.label ?? a.model);
-  const route = {
-    mode: auto ? AUTO : "manual",
-    provider: provider.label,
-    model: entry.model.label,
-    task: decision.task.type,
-    reason: reasonFor(decision, entry, { fallbackFrom, manual: !auto }),
-    fallbackFrom,
+  const label = (id) => models.find((m) => m.id === id)?.label ?? id;
+  const sendHeaders = () => {
+    if (headersSent) return;
+    headersSent = true;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
   };
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-  const start = { type: "start", model: entry.model.id, maxTokens: selected.reply.maxTokens, limitSeconds: Math.floor(limitMs / 1000), route };
-  if (body.debug === true) start.debug = debugInfo(decision, entry, attempts, order, auto);
-  writeEvent(res, start);
 
-  let idle;
-  const resetIdle = () => {
-    clearTimeout(idle);
-    idle = setTimeout(() => abortAll("idle_timeout"), IDLE_TIMEOUT_MS);
+  const tried = new Set();
+  /**
+   * Next candidate in score order. If every attempt so far failed on one provider, the last allowed
+   * attempt goes to the best candidate from another provider, so an outage of one provider can't
+   * use up all attempts (e.g. 503 on every Gemini model while OpenRouter works).
+   */
+  const nextCandidate = () => {
+    const usable = order.filter((e) => !tried.has(e.model.id) && !excludedProviders.has(e.model.provider) && !(e.model.free && excludedFree.has(e.model.provider)));
+    const failed = new Set(attempts.filter((a) => !a.ok).map((a) => a.provider));
+    if (attempts.length && attempts.length === maxAttempts - 1 && failed.size === 1) {
+      const other = usable.find((e) => !failed.has(e.model.provider));
+      if (other) return other;
+    }
+    return usable[0];
   };
-  resetIdle();
-  let finishReason = null;
-  const handle = (event) => {
-    if (event.type === "finish") finishReason = event.reason;
-    else if (event.type !== "alive") writeEvent(res, event);
-  };
+
   try {
-    if (first) handle(first);
     for (;;) {
-      const { value, done } = await iterator.next();
-      if (done) break;
-      resetIdle();
-      handle(value);
-    }
-    writeEvent(res, { type: "done", finishReason });
-  } catch (err) {
-    if (abortCause !== "client") {
-      let message;
-      let code = abortCause;
-      if (abortCause === "idle_timeout") message = "The model stopped responding partway through. Try regenerating.";
-      else if (abortCause === "max_duration") message = `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`;
-      else {
-        ({ message, code } = err instanceof UpstreamError ? mapUpstreamError(err, provider) : { message: midStreamMessage(provider), code: "upstream_error" });
-        health.recordFailure(entry.model.id, failureKind(err).kind);
+      if (attempts.length >= maxAttempts || abortCause) break;
+      const entry = nextCandidate();
+      if (!entry) break;
+      tried.add(entry.model.id);
+      const model = entry.model;
+      const provider = PROVIDERS[model.provider];
+      const remaining = (headersSent ? streamEnd : deadline) - Date.now();
+      if (remaining <= 1000) break;
+      // Back off before retrying the same provider after a provider-side failure.
+      const prev = attempts.at(-1);
+      if (prev && prev.provider === model.provider && prev.kind === "overloaded") {
+        await new Promise((r) => setTimeout(r, Math.min(2000, 300 * 2 ** (attempts.length - 1))));
+        if (abortCause) break; // Stop pressed while waiting: never start another model
       }
-      writeEvent(res, { type: "error", message, code });
+
+      const maxTokens = planMaxTokens(model, body.maxTokens, promptChars);
+      if (maxTokens < 256) {
+        attempts.push({ model: model.id, provider: model.provider, ok: false, error: "context too small", kind: "rejected", ms: 0 });
+        continue;
+      }
+      const ctrl = new AbortController();
+      current = ctrl;
+      const started = Date.now();
+      let attemptAbort = null; // "timeout" (no first event in time) | "idle" (silence mid-stream)
+      let timer;
+      const arm = (ms, cause) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          attemptAbort = cause;
+          ctrl.abort();
+        }, ms);
+      };
+      arm(auto || manualFallback ? Math.min(attemptTimeoutMs(), remaining) : remaining, "timeout");
+      const record = { model: model.id, provider: model.provider, ok: false, ms: 0 };
+      attempts.push(record);
+      let phase = "A";
+      let finishReason = null;
+      if (pendingReset) {
+        writeEvent(res, pendingReset);
+        pendingReset = null;
+      }
+      try {
+        const reply = await provider.open({
+          model,
+          messages,
+          system,
+          temperature: clamp(body.temperature, 0, 2, 0.6),
+          topP: clamp(body.topP, 0.01, 1, 0.95),
+          maxTokens,
+          effort: effortFor(model, decision.task.tier, body.thinking),
+          signal: ctrl.signal,
+        });
+        const iterator = reply.events[Symbol.asyncIterator]();
+        const first = await firstEvent(iterator, () => arm(IDLE_TIMEOUT_MS, "idle"));
+        health.recordSuccess(model.id, { ttftMs: Date.now() - started });
+        record.ok = true;
+        record.ms = Date.now() - started;
+
+        const fallbackFrom = attempts.filter((a) => !a.ok).map((a) => label(a.model));
+        const route = {
+          mode: auto ? AUTO : "manual",
+          provider: provider.label,
+          model: model.label,
+          task: decision.task.type,
+          reason: reasonFor(decision, entry, { fallbackFrom, manual: !auto }),
+          fallbackFrom,
+        };
+        sendHeaders();
+        const start = { type: "start", model: model.id, maxTokens: reply.maxTokens, limitSeconds: Math.floor(limitMs / 1000), route };
+        if (body.debug === true) start.debug = debugInfo(decision, entry, attempts, order, auto);
+        writeEvent(res, start);
+
+        const handle = (event) => {
+          if (event.type === "finish") finishReason = event.reason;
+          else if (event.type !== "alive") {
+            if (event.type === "content") phase = "C";
+            else if (event.type === "reasoning" && phase === "A") phase = "B";
+            writeEvent(res, event);
+          }
+        };
+        arm(IDLE_TIMEOUT_MS, "idle");
+        if (first) handle(first);
+        for (;;) {
+          const { value, done } = await iterator.next();
+          if (done) break;
+          arm(IDLE_TIMEOUT_MS, "idle");
+          handle(value);
+        }
+        clearTimeout(timer);
+        writeEvent(res, { type: "done", finishReason });
+        return; // D
+      } catch (err) {
+        clearTimeout(timer);
+        record.ok = false;
+        record.ms = Date.now() - started;
+        if (abortCause) break; // Stop or the time limit: end without trying another model
+        const error = attemptAbort === "timeout" ? Object.assign(new Error("attempt timeout"), { attemptTimeout: true }) : attemptAbort === "idle" ? new UpstreamError(0, "", "midstream") : err;
+        const f = failureKind(error);
+        health.recordFailure(model.id, f.kind);
+        if (f.provider) {
+          health.recordProviderFailure(model.provider, f.provider.kind, { scope: f.provider.scope });
+          (f.provider.scope === "free" ? excludedFree : excludedProviders).add(model.provider);
+        }
+        const mapped = attemptAbort === "idle" ? new HttpError(502, "The model stopped responding partway through. Try regenerating.", "idle_timeout") : mapUpstreamError(error, provider);
+        record.error = mapped.code;
+        record.kind = f.kind;
+        record.phase = phase;
+        lastErr = { mapped };
+        if (phase === "C") {
+          // Answer text has reached the browser: never switch models now.
+          writeEvent(res, { type: "error", message: mapped.message, code: mapped.code });
+          return;
+        }
+        if (phase === "B") {
+          // Only reasoning was sent: if another model is tried, the browser first discards this attempt.
+          // If none is (manual model, attempts used up), the reasoning stays with the error, as before.
+          pendingReset = { type: "reset", message: "The model is busy. Trying another available model…", code: mapped.code };
+        }
+        if (!f.retryable) break;
+      }
     }
+
+    // No attempt finished.
+    if (abortCause === "client") return;
+    let failure;
+    if (abortCause === "max_duration") failure = headersSent
+      ? new HttpError(504, `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`, "max_duration")
+      : new HttpError(504, "No model started responding before the time limit. Try again.", "upstream_timeout");
+    else {
+      failure = lastErr?.mapped ?? new HttpError(503, "No model is available right now. Try again shortly.", "upstream_busy");
+      if (attempts.length > 1) failure.message = `No available model could answer right now (tried ${attempts.map((a) => label(a.model)).join(", ")}). ${failure.message}`;
+    }
+    if (!headersSent) throw failure;
+    writeEvent(res, { type: "error", message: failure.message, code: failure.code });
   } finally {
-    clearTimeout(idle);
     clearTimeout(maxTimer);
     finished = true;
-    await release(); // free the slot before ending: the platform may freeze the request after
-    res.end();
+    if (headersSent) {
+      await release(); // free the slot before ending: the platform may freeze the request after
+      res.end();
+    }
   }
 }
 

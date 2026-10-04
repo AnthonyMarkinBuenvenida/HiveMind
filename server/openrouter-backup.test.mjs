@@ -8,9 +8,8 @@ import { createServer } from "node:http";
 
 const MAIN = "sk-or-main-test";
 const BACKUP = "sk-or-backup-test";
-const DEEPSEEK = "sk-or-deepseek-test";
 const BACKUP_2 = "sk-or-backup-2-test";
-Object.assign(process.env, { MODEL_REGISTRY_LIVE: "false", OPENROUTER_API_KEY: MAIN, OPENROUTER_API_KEY_BACKUP: BACKUP, OPENROUTER_API_KEY_BACKUP_2: BACKUP_2, OPENROUTER_DEEPSEEK_API_KEY: DEEPSEEK, RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
+Object.assign(process.env, { MODEL_REGISTRY_LIVE: "false", OPENROUTER_API_KEY: MAIN, OPENROUTER_API_KEY_BACKUP: BACKUP, OPENROUTER_API_KEY_BACKUP_2: BACKUP_2, RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
 delete process.env.GEMINI_API_KEY;
 delete process.env.GOOGLE_API_KEY;
 delete process.env.DATABASE_URL;
@@ -62,23 +61,6 @@ async function chat(model = MODEL) {
 }
 
 // Order matters: a key that fails for a key-specific reason is benched (tried last) for 5 minutes.
-test("DeepSeek models use the DeepSeek key first", async () => {
-  reply = () => "ok";
-  assert.equal((await chat("deepseek/deepseek-v4.1-flash")).status, 200);
-  assert.deepEqual(calls, [DEEPSEEK]);
-});
-
-test("a rejected DeepSeek key falls back to the main key", async () => {
-  reply = (key) => (key === DEEPSEEK ? rejected : "ok");
-  assert.equal((await chat("deepseek/deepseek-v4-pro")).status, 200);
-  assert.deepEqual(calls, [DEEPSEEK, MAIN]);
-  // The benched DeepSeek key is now tried last; other models never start with it.
-  calls = [];
-  reply = () => "ok";
-  assert.equal((await chat("deepseek/deepseek-v4-pro")).status, 200);
-  assert.deepEqual(calls, [MAIN]);
-});
-
 test("the main key is used while it works", async () => {
   reply = () => "ok";
   assert.equal((await chat()).status, 200);
@@ -111,7 +93,7 @@ test("when every key fails, the last error is reported", async () => {
   const r = await chat();
   assert.equal(r.status, 502);
   assert.equal(r.json.error.code, "auth_failed");
-  assert.deepEqual(calls.sort(), [BACKUP, BACKUP_2, DEEPSEEK, MAIN].sort());
+  assert.deepEqual(calls.sort(), [BACKUP, BACKUP_2, MAIN].sort());
   assert.doesNotMatch(JSON.stringify(r.json), /sk-or-/);
 });
 

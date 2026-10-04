@@ -103,7 +103,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             switch (event.type) {
               case "start":
                 // The router reports which model actually answers (in Auto mode, chosen per message).
-                patch({ model: event.model, maxTokens: event.maxTokens, route: event.route, routeDebug: event.debug });
+                patch({ model: event.model, maxTokens: event.maxTokens, route: event.route, routeDebug: event.debug, notice: undefined });
+                break;
+              case "reset":
+                // Only reasoning had streamed when the model failed: drop that attempt completely
+                // (including any text still waiting for the next frame) so the next model starts clean.
+                cancelAnimationFrame(frame);
+                frame = 0;
+                pending = { content: "", reasoning: "" };
+                reasoningStart = null;
+                reasoningMs = undefined;
+                patch({ content: "", reasoning: undefined, reasoningMs: undefined, usage: undefined, notice: event.message });
                 break;
               case "reasoning":
                 reasoningStart ??= Date.now();
@@ -131,16 +141,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         cancelAnimationFrame(frame);
         flush();
         if (reasoningStart !== null) reasoningMs ??= Date.now() - reasoningStart;
-        patch({ status: streamError ? "error" : "done", error: streamError, errorCode: streamErrorCode, finishReason, reasoningMs });
+        patch({ status: streamError ? "error" : "done", error: streamError, errorCode: streamErrorCode, finishReason, reasoningMs, notice: undefined });
       } catch (err) {
         cancelAnimationFrame(frame);
         flush();
         if (reasoningStart !== null) reasoningMs ??= Date.now() - reasoningStart;
         if (ctrl.signal.aborted) {
-          patch({ status: "stopped", reasoningMs });
+          patch({ status: "stopped", reasoningMs, notice: undefined });
         } else {
           const message = err instanceof Error ? err.message : "Something went wrong.";
-          patch({ status: "error", error: message, errorCode: err instanceof ApiError ? err.code : undefined, reasoningMs });
+          patch({ status: "error", error: message, errorCode: err instanceof ApiError ? err.code : undefined, reasoningMs, notice: undefined });
           if (err instanceof ApiError && (err.code === "network" || err.code === "auth_failed" || err.code === "missing_key")) recheckHealth();
         }
       } finally {

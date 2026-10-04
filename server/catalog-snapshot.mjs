@@ -154,32 +154,6 @@ export const SNAPSHOT = [
     }
   },
   {
-    "id": "deepseek/deepseek-v4.1-flash",
-    "provider": "openrouter",
-    "label": "DeepSeek V4.1 Flash",
-    "vendor": "DeepSeek",
-    "contextWindow": 1048576,
-    "maxOutput": 943718,
-    "reasoning": "toggle",
-    "efforts": [
-      "low",
-      "high",
-      "max"
-    ],
-    "vision": true,
-    "tools": true,
-    "free": false,
-    "price": {
-      "input": 0.003,
-      "output": 2.4
-    },
-    "quality": {
-      "intelligence": 39.5,
-      "coding": null
-    },
-    "keyEnv": "OPENROUTER_DEEPSEEK_API_KEY"
-  },
-  {
     "id": "qwen/qwen3.8-27b:free",
     "provider": "openrouter",
     "label": "Qwen3.8 27B",
@@ -269,31 +243,6 @@ export const SNAPSHOT = [
       "intelligence": 22.9,
       "coding": 49.3
     }
-  },
-  {
-    "id": "deepseek/deepseek-v4-pro",
-    "provider": "openrouter",
-    "label": "DeepSeek V4 Pro 0423",
-    "vendor": "DeepSeek",
-    "contextWindow": 1048576,
-    "maxOutput": 384000,
-    "reasoning": "toggle",
-    "efforts": [
-      "high",
-      "xhigh"
-    ],
-    "vision": false,
-    "tools": true,
-    "free": false,
-    "price": {
-      "input": 0.209,
-      "output": 0.418
-    },
-    "quality": {
-      "intelligence": 30.4,
-      "coding": 59.4
-    },
-    "keyEnv": "OPENROUTER_DEEPSEEK_API_KEY"
   },
   {
     "id": "google/gemma-4-31b-it:free",

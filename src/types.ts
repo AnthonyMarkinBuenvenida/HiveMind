@@ -73,6 +73,8 @@ export interface Message {
   /** Assistant-only: how the router chose the model (and, with routing details on, the full decision). */
   route?: RouteInfo;
   routeDebug?: unknown;
+  /** Transient status while the router replaces a model that failed before answering. */
+  notice?: string;
 }
 
 export interface Conversation {
@@ -88,6 +90,8 @@ export type HealthStatus = "checking" | "ok" | "missing_key" | "auth_failed" | "
 /** Normalized events streamed by POST /api/chat (see server/api.mjs). */
 export type ChatEvent =
   | { type: "start"; model: string; maxTokens?: number; limitSeconds?: number; route?: RouteInfo; debug?: unknown }
+  /** The model failed after streaming only reasoning: discard everything from this attempt; another model starts next. */
+  | { type: "reset"; message: string; code?: string }
   | { type: "reasoning"; text: string }
   | { type: "content"; text: string }
   | { type: "usage"; usage: Usage }

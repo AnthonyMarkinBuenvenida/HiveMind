@@ -19,7 +19,6 @@ Object.assign(process.env, {
 delete process.env.DATABASE_URL;
 delete process.env.OPENROUTER_API_KEY_BACKUP;
 delete process.env.OPENROUTER_API_KEY_BACKUP_2;
-delete process.env.OPENROUTER_DEEPSEEK_API_KEY;
 
 /** behaviour(call) → "ok" | "hang" | "empty" | "break-after-text" | { status, json } */
 let behaviour = () => "ok";
@@ -144,6 +143,42 @@ describe("failover", () => {
     const r = await chat({ model: "auto", messages: [{ role: "user", content: HARD }] });
     assert.equal(r.status, 200);
     assert.equal(r.start.route.provider, "OpenRouter");
+  });
+
+  const busy503 = { status: 503, json: { error: { code: 503, message: "high demand", status: "UNAVAILABLE" } } };
+
+  test("provider coverage A: every earlier attempt failed on Gemini → the last attempt goes to OpenRouter", async () => {
+    behaviour = (c) => (c.provider === "gemini" ? busy503 : "ok");
+    const r = await chat({ model: "auto", messages: [{ role: "user", content: HARD }] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(calls.map((c) => c.provider), ["gemini", "gemini", "openrouter"]);
+    const ranked = r.start.debug.candidates.map((c) => c.model);
+    assert.ok(ranked.slice(0, 3).every((id) => !id.includes("/")), "the normal top 3 is all Gemini, so the rule (not the ranking) chose OpenRouter");
+    assert.ok(ranked.indexOf(calls[2].model) === -1 || ranked.indexOf(calls[2].model) > 2);
+  });
+
+  test("provider coverage B: when the first model works, the normal ranking is used", async () => {
+    const r = await chat({ model: "auto", messages: [{ role: "user", content: HARD }] });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].model, r.start.debug.candidates[0].model);
+  });
+
+  test("provider coverage B2: a failure before the last attempt doesn't force a provider switch", async () => {
+    behaviour = (c) => (c.n === 0 ? busy503 : "ok");
+    const r = await chat({ model: "auto", messages: [{ role: "user", content: HARD }] });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].model, r.start.debug.candidates[1].model, "second attempt = second-ranked model, same provider allowed");
+    assert.equal(calls[1].provider, calls[0].provider);
+  });
+
+  test("provider coverage C: an OpenRouter model ranked first is used normally", async () => {
+    const list = (await (await fetch(base + "/api/models")).json()).models;
+    for (const m of list) if (m.provider === "Gemini API") health.recordFailure(m.id, "overloaded"); // Gemini cooling → OpenRouter ranks first
+    const r = await chat({ model: "auto", messages: [{ role: "user", content: "Give me three tips for staying focused while studying." }] });
+    assert.equal(r.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].provider, "openrouter");
+    assert.equal(calls[0].model, r.start.debug.candidates[0].model);
   });
 
   test("OpenRouter outage → Gemini answers", async () => {

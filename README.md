@@ -41,13 +41,13 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 
 ## Deploying to Vercel (optional)
 
-`vercel.json` sets the build, function durations, request cancellation and security headers. In the project's environment variables set `GEMINI_API_KEY` and/or `OPENROUTER_API_KEY` (mark them **Sensitive**), optionally `OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2`, `OPENROUTER_DEEPSEEK_API_KEY` (Sensitive), `DATABASE_URL` (global rate limits) and `DEFAULT_MODEL` (`auto` or a model id; an unknown value falls back to `auto`). Never use a `VITE_` prefix for keys. Then `vercel deploy --prod` and check `GET /api/health` (it reports the deployment that answered).
+`vercel.json` sets the build, function durations, request cancellation and security headers. In the project's environment variables set `GEMINI_API_KEY` and/or `OPENROUTER_API_KEY` (mark them **Sensitive**), optionally `OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2` (Sensitive), `DATABASE_URL` (global rate limits) and `DEFAULT_MODEL` (`auto` or a model id; an unknown value falls back to `auto`). Never use a `VITE_` prefix for keys. Then `vercel deploy --prod` and check `GET /api/health` (it reports the deployment that answered).
 
 ## Features
 
 - Streaming chat with stop, regenerate, retry, edit-and-resend, and **Continue** when a response hits the output or time limit
 - **Auto — Best available** (default): picks a model per message from the task, real benchmark data (Artificial Analysis indices), live health, latency, cost and remaining free quota, and fails over to another model or provider when one fails (docs/ROUTING.md). Each reply shows which model answered and why
-- Manual model picker grouped by provider, discovered from the providers' live catalogs (currently 6 Gemini and 8 OpenRouter models); *Switch to Auto* when a chosen model fails; optional routing-details view for developers
+- Manual model picker grouped by provider, discovered from the providers' live catalogs (currently 6 Gemini and 6 free OpenRouter models); *Switch to Auto* when a chosen model fails; optional routing-details view for developers
 - Visible thinking, thinking on/off where supported (effort scales with task difficulty in Auto), temperature, top-p, system prompt
 - **Max output up to 50,000 tokens**, with presets
 - Math (KaTeX) and syntax highlighting (20+ languages), lazy-loaded; Markdown tables, code copy/wrap
@@ -70,7 +70,7 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 ## Known limitations
 
 - **Public by link**: anyone with the URL spends the demo's quotas (bounded by the limits above and by the providers' own free-tier limits — a `429` is shown as "rate limit or daily quota reached").
-- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day. Extra keys (`OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2`, `OPENROUTER_DEEPSEEK_API_KEY`) are fallbacks, but keys on the same account share that limit.
+- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day. Extra keys (`OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2`) are fallbacks, but keys on the same account share that limit.
 - **Chats live in each browser** (`localStorage`); they don't sync and aren't on the server.
 - **Attachments are text only** — no image/PDF/Office parsing. The router can route image requests to image-capable models, but there is no image upload yet, so that path is only covered by tests.
 - A visitor's IP is the rate-limit identity: people behind one NAT share a quota; a visitor with many IPs gets more (the global daily cap still applies).
@@ -78,5 +78,5 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 - **Router health is per server instance**: on Vercel each function instance learns model health on its own and starts fresh after a cold start or redeploy.
 - **Auto isn't strictly deterministic**: for the same message and data the decision is reproducible, but measured latency and recent failures change the ranking of close candidates (e.g. two similar Gemini Flash models), so the same request can be answered by different similar models over time.
 - **Not every model is equally available**: free OpenRouter models are sometimes rate-limited upstream, and Gemini models report "high demand" at times; Auto falls back, a manually chosen model shows an error (with *Switch to Auto*).
-- **Some OpenRouter models cost money**: the DeepSeek models aren't free; on an account without credit their requests have cost fractions of a cent so far and may start failing with "needs credits". Auto prefers free models unless a paid one is clearly better.
+- **Only free OpenRouter models are used by default.** Paid models (which cost money per request) are added only through `OPENROUTER_EXTRA_MODELS`; Auto then still prefers free models unless a paid one is clearly better. With fewer providers' models in the advanced tier, a request's last failover attempt is reserved for another provider when all earlier attempts failed on one.
 - **Rate-limit failover** (a provider's 429) is covered by automated tests with a simulated provider; real provider outages, timeouts and rejected keys were verified against the live APIs.

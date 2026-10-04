@@ -36,7 +36,8 @@ const DEFAULT_OPENROUTER_EXCLUDE = [
   "thinkingmachines/inkling:free",
   "thinkingmachines/inkling-small:free",
 ];
-const DEFAULT_OPENROUTER_EXTRA = ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro"];
+// Non-free OpenRouter models to add on purpose (they cost money): none by default.
+const DEFAULT_OPENROUTER_EXTRA = [];
 
 const listEnv = (name, fallback) => {
   const v = process.env[name];
@@ -47,8 +48,6 @@ const listEnv = (name, fallback) => {
 export const OVERRIDES = {
   // `reasoning: { enabled: false }` garbled its answer (2026-10-04), so thinking stays on.
   "cohere/north-mini-code:free": { reasoning: "always" },
-  "deepseek/deepseek-v4.1-flash": { keyEnv: "OPENROUTER_DEEPSEEK_API_KEY" },
-  "deepseek/deepseek-v4-pro": { keyEnv: "OPENROUTER_DEEPSEEK_API_KEY" },
 };
 
 // ---------- Normalization ----------

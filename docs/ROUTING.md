@@ -25,7 +25,7 @@ Models are **discovered by rules** from the providers' live catalogs, refreshed 
 | Provider | Source | Included when |
 |---|---|---|
 | Gemini | `models.list` (needs the key) | a plain chat family (`gemini-X.Y-flash`, `-flash-lite`, `-pro`), newest generation only (`GEMINI_MIN_VERSION` to override), no Pro on the free tier (`GEMINI_TIER=paid` to include) |
-| OpenRouter | `GET /api/v1/models` (public) | a `:free` text model with an Artificial Analysis intelligence index, not in `OPENROUTER_EXCLUDE`; plus `OPENROUTER_EXTRA_MODELS` (default: the two DeepSeek models) |
+| OpenRouter | `GET /api/v1/models` (public) | a `:free` text model with an Artificial Analysis intelligence index, not in `OPENROUTER_EXCLUDE`; plus `OPENROUTER_EXTRA_MODELS` (paid models added on purpose; none by default) |
 
 Each model is normalized to one shape: context window, max output, reasoning mode (`toggle`/`always`/`none`) and supported effort levels, vision, tools, streaming, price (what this deployment pays — Gemini's free tier counts as $0), and **quality = Artificial Analysis intelligence and coding indices** as published in OpenRouter's catalog (Gemini models are matched as `google/<id>`). Unknown quality stays `null`; nothing is invented.
 
@@ -65,8 +65,18 @@ Bonuses: +0.03 reasoning support for reasoning-heavy tasks, +0.02 when the model
 
 Candidates are tried in score order, at most `ROUTER_MAX_ATTEMPTS` (3) per request, never the same model twice. Each attempt has its own abort controller and a first-token timeout (`ROUTER_ATTEMPT_TIMEOUT_SECONDS`, 45 s in Auto); the request-wide queue limit (`UPSTREAM_QUEUE_TIMEOUT_SECONDS`) still applies.
 
-- **Failover is only possible before anything reaches the browser.** The first event of a reply is awaited before the SSE headers are written; a failure up to that point moves to the next candidate. A failure after text has streamed ends the reply with an error (Retry/Continue), so answers are never mixed.
+- **Failover boundary — never mix two models in one reply.** Each attempt is in one of four states:
+
+  | State | What reached the browser | If the model fails |
+  |---|---|---|
+  | A | nothing | the next candidate is tried silently |
+  | B | reasoning only, no answer text | the next candidate is tried; first a `reset` event tells the browser to discard the attempt (reasoning, timing, usage) and show *"The model is busy. Trying another available model…"*; the next model then sends a fresh `start` |
+  | C | answer text | no switch: the reply ends with an error (Retry/Continue) |
+  | D | finished | — |
+
+  Reasoning and answer text are told apart by the adapters (Gemini `part.thought`, OpenRouter `delta.reasoning` vs `delta.content`). The `reset` is sent only when another model actually starts; if none does (manual model without fallback, attempts used up), the failed model's reasoning stays with the error as before. A model that goes silent for 60 s during reasoning counts as failed (state B); silence after answer text ends the reply. Stop cancels the current attempt and no further model is started — also while backing off between attempts.
 - Retried: 404/403 (model unavailable or restricted), 402 (needs credits), 429, 5xx/"high demand", timeouts, network errors, a stream that ends without a finish reason, and 400s (another model may accept the request, e.g. a context limit).
+- **Provider coverage:** if every attempt so far failed on one provider, the last allowed attempt goes to the best candidate from another provider, so an outage of one provider (e.g. 503 on every Gemini model) can't use up all attempts.
 - A rejected key or unreachable provider excludes **that provider** for the rest of the request; OpenRouter's account-wide free quota (`free-models-per-day`) excludes its **free models**.
 - Backoff (300 ms × 2ⁿ, ≤ 2 s) only before retrying the same provider after an overload.
 - If nothing works, the error says which models were tried and why.
@@ -89,12 +99,12 @@ Under each Auto reply: the model that answered and a small **Auto · Provider** 
 Request
 → Task type: coding (general tier) · coding
 → Requirements: ~16 prompt tokens, 4,000 output, ranked by coding benchmark
-→ Eligible models: gemini-3.6-flash (0.95), deepseek/deepseek-v4-pro (0.861), …
+→ Eligible models: gemini-3.6-flash (0.95), gemini-3.5-flash-lite (0.856), qwen/qwen3.8-27b:free (0.835), …
 → Attempts: gemini-3.6-flash ok 2528 ms
 → Selected provider: Gemini API
 → Selected model: Gemini 3.6 Flash
 → Reason: A coding task — chose Gemini 3.6 Flash because …
-→ Fallbacks available: deepseek/deepseek-v4-pro, gemini-3.5-flash-lite, …
+→ Fallbacks available: gemini-3.5-flash-lite, gemini-3.7-flash, qwen/qwen3.8-27b:free, …
 ```
 
 No keys, message text or IP addresses are included.

@@ -113,8 +113,21 @@ function useElapsed(since: number) {
   return Math.max(0, Math.floor((now - since) / 1000));
 }
 
-function Waiting({ label, since }: { label: string; since: number }) {
+function Waiting({ label, since, notice }: { label: string; since: number; notice?: string }) {
   const s = useElapsed(since);
+  if (notice) {
+    // The router is replacing a model that failed before answering.
+    return (
+      <div className="typing" role="status">
+        <span className="typing-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span>{notice}</span>
+      </div>
+    );
+  }
   return (
     <div className="typing" role="status">
       <span className="typing-dots" aria-hidden="true">
@@ -232,7 +245,7 @@ function AssistantMessage({ message, conversationId, isLast }: { message: Messag
 
       {message.reasoning && <Reasoning text={message.reasoning} ms={message.reasoningMs} active={thinkingNow} />}
 
-      {isStreaming && !message.content && !message.reasoning && <Waiting label={modelLabel(message.model)} since={message.createdAt} />}
+      {isStreaming && !message.content && !message.reasoning && <Waiting label={modelLabel(message.model)} since={message.createdAt} notice={message.notice} />}
 
       {message.content && <Markdown text={message.content} streaming={isStreaming} />}
 

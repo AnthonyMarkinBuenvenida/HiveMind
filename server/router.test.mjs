@@ -203,7 +203,7 @@ describe("health", () => {
   test("provider quota exhaustion cools only that provider's free models", () => {
     health.recordProviderFailure("openrouter", "quota", { scope: "free" });
     assert.ok(health.coolingReason(byId("qwen/qwen3.8-27b:free")));
-    assert.equal(health.coolingReason(byId("deepseek/deepseek-v4-pro")), null);
+    assert.equal(health.coolingReason(synthetic("paid", { provider: "openrouter", free: false })), null, "a paid model isn't affected");
     assert.equal(health.coolingReason(byId("gemini-3.8-flash")), null);
   });
   test("when every model is cooling, they are still tried (no dead end)", () => {
