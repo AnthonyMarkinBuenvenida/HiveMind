@@ -11,6 +11,7 @@ import { errorDetail, UpstreamError } from "./upstream.mjs";
 const KEY_ENVS = [
   { env: "OPENROUTER_API_KEY", name: "main" },
   { env: "OPENROUTER_API_KEY_BACKUP", name: "backup" },
+  { env: "OPENROUTER_API_KEY_BACKUP_2", name: "second backup" },
   { env: "OPENROUTER_DEEPSEEK_API_KEY", name: "DeepSeek" },
 ];
 

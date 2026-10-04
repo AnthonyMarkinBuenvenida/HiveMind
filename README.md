@@ -68,7 +68,7 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 ## Known limitations
 
 - **Public by link**: anyone with the URL spends the demo's quotas (bounded by the limits above and by the providers' own free-tier limits — a `429` is shown as "rate limit or daily quota reached").
-- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day. Extra keys (`OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_DEEPSEEK_API_KEY`) are fallbacks, but keys on the same account share that limit.
+- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day. Extra keys (`OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2`, `OPENROUTER_DEEPSEEK_API_KEY`) are fallbacks, but keys on the same account share that limit.
 - **Chats live in each browser** (`localStorage`); they don't sync and aren't on the server.
 - **Attachments are text only** — no image/PDF/Office parsing.
 - A visitor's IP is the rate-limit identity: people behind one NAT share a quota; a visitor with many IPs gets more (the global daily cap still applies).

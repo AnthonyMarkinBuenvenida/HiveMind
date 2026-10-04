@@ -9,7 +9,8 @@ import { createServer } from "node:http";
 const MAIN = "sk-or-main-test";
 const BACKUP = "sk-or-backup-test";
 const DEEPSEEK = "sk-or-deepseek-test";
-Object.assign(process.env, { OPENROUTER_API_KEY: MAIN, OPENROUTER_API_KEY_BACKUP: BACKUP, OPENROUTER_DEEPSEEK_API_KEY: DEEPSEEK, RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
+const BACKUP_2 = "sk-or-backup-2-test";
+Object.assign(process.env, { OPENROUTER_API_KEY: MAIN, OPENROUTER_API_KEY_BACKUP: BACKUP, OPENROUTER_API_KEY_BACKUP_2: BACKUP_2, OPENROUTER_DEEPSEEK_API_KEY: DEEPSEEK, RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
 delete process.env.GEMINI_API_KEY;
 delete process.env.GOOGLE_API_KEY;
 delete process.env.DATABASE_URL;
@@ -110,7 +111,7 @@ test("when every key fails, the last error is reported", async () => {
   const r = await chat();
   assert.equal(r.status, 502);
   assert.equal(r.json.error.code, "auth_failed");
-  assert.deepEqual(calls.sort(), [BACKUP, DEEPSEEK, MAIN].sort());
+  assert.deepEqual(calls.sort(), [BACKUP, BACKUP_2, DEEPSEEK, MAIN].sort());
   assert.doesNotMatch(JSON.stringify(r.json), /sk-or-/);
 });
 
