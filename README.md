@@ -46,7 +46,7 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 ## Features
 
 - Streaming chat with stop, regenerate, retry, edit-and-resend, and **Continue** when a response hits the output or time limit
-- Model picker grouped by provider: 4 free-tier Gemini models and 4 free OpenRouter models (Nemotron 3 Super/Ultra, Qwen 3.8, North Mini Code); visible thinking, thinking on/off where supported, temperature, top-p, system prompt
+- Model picker grouped by provider: 4 free-tier Gemini models and 6 OpenRouter models (DeepSeek V4.1 Flash, DeepSeek V4 Pro, Nemotron 3 Super/Ultra, Qwen 3.8, North Mini Code); visible thinking, thinking on/off where supported, temperature, top-p, system prompt
 - **Max output up to 50,000 tokens**, with presets
 - Math (KaTeX) and syntax highlighting (20+ languages), lazy-loaded; Markdown tables, code copy/wrap
 - Conversations stored in the browser: search, rename, export Markdown/JSON, delete, delete-all
@@ -68,7 +68,7 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 ## Known limitations
 
 - **Public by link**: anyone with the URL spends the demo's quotas (bounded by the limits above and by the providers' own free-tier limits — a `429` is shown as "rate limit or daily quota reached").
-- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day.
+- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day. Extra keys (`OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_DEEPSEEK_API_KEY`) are fallbacks, but keys on the same account share that limit.
 - **Chats live in each browser** (`localStorage`); they don't sync and aren't on the server.
 - **Attachments are text only** — no image/PDF/Office parsing.
 - A visitor's IP is the rate-limit identity: people behind one NAT share a quota; a visitor with many IPs gets more (the global daily cap still applies).

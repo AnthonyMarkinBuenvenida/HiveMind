@@ -5,11 +5,51 @@
 
 import { errorDetail, UpstreamError } from "./upstream.mjs";
 
+// Every OpenRouter key the server knows, in fallback order. A model may name its own first choice
+// (`keyEnv` in server/models.mjs, e.g. the DeepSeek models); the others are tried when that key fails
+// for a key-specific reason.
+const KEY_ENVS = [
+  { env: "OPENROUTER_API_KEY", name: "main" },
+  { env: "OPENROUTER_API_KEY_BACKUP", name: "backup" },
+  { env: "OPENROUTER_DEEPSEEK_API_KEY", name: "DeepSeek" },
+];
+
 function config() {
   return {
-    key: (process.env.OPENROUTER_API_KEY || "").trim(),
+    keys: KEY_ENVS.map(({ env, name }) => ({ name, key: (process.env[env] ?? "").trim() })).filter((k) => k.key),
     base: (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, ""),
   };
+}
+
+/** Distinct keys for a model: its own key first (if set), then the rest in KEY_ENVS order. */
+function keysFor(model, keys) {
+  const own = model?.keyEnv ? (process.env[model.keyEnv] ?? "").trim() : "";
+  return [...new Set([own, ...keys.map((k) => k.key)].filter(Boolean))];
+}
+
+// A key that failed for a key-specific reason is tried last for a while, so later requests don't
+// each pay for a failed attempt first. Per process (an instance restart forgets it, which is harmless).
+const KEY_BENCH_MS = 5 * 60_000;
+const benchedUntil = new Map(); // key -> time
+
+/**
+ * Failures another key may not share: a rejected or disabled key, no credits, the key's own limit.
+ * Not upstream rate limits ("…rate-limited upstream…": every key gets them) or bad requests.
+ * Note: OpenRouter counts the free-model daily limit per account, so a backup key from the same
+ * account runs out at the same time as the main one.
+ */
+function keySpecific(err) {
+  if (err.status === 401 || err.status === 402) return true;
+  if (err.status === 403) return /key|disabled|limit/i.test(err.detail);
+  if (err.status === 429) return !/upstream/i.test(err.detail);
+  return false;
+}
+
+/** Keys in the order to try them: benched keys last (still tried as a last resort). */
+function keyOrder(keys) {
+  const now = Date.now();
+  const benched = (k) => (benchedUntil.get(k) ?? 0) > now;
+  return [...keys.filter((k) => !benched(k)), ...keys.filter(benched)];
 }
 
 const headers = (key) => ({
@@ -28,17 +68,28 @@ export const openrouterProvider = {
   vendor: "OpenRouter",
   keyEnv: "OPENROUTER_API_KEY",
 
-  configured: () => Boolean(config().key),
+  configured: () => config().keys.length > 0,
 
-  /** GET /key validates the key without spending any of its request quota. */
+  /**
+   * GET /key validates each key without spending any request quota. Healthy while any key works;
+   * returns a warning naming any key that is rejected.
+   */
   async check(_modelId, signal) {
-    const { key, base } = config();
-    const r = await fetch(`${base}/key`, { headers: headers(key), signal });
-    if (!r.ok) throw await fail(r);
+    const { keys, base } = config();
+    const results = await Promise.all(
+      keys.map(async ({ key }) => {
+        const r = await fetch(`${base}/key`, { headers: headers(key), signal });
+        return r.ok ? null : await fail(r);
+      }),
+    );
+    if (results.every(Boolean)) throw results[0];
+    const warnings = results.flatMap((err, i) => (err ? [`OpenRouter ${keys[i].name} key was rejected (${err.status}).`] : []));
+    return { warnings };
   },
 
   async open({ model, messages, system, temperature, topP, maxTokens, thinking, signal }) {
-    const { key, base } = config();
+    const { keys: all, base } = config();
+    const keys = keysFor(model, all);
     const payload = {
       model: model.id,
       messages: system ? [{ role: "system", content: system }, ...messages] : messages,
@@ -49,9 +100,17 @@ export const openrouterProvider = {
     };
     if (model.reasoning === "toggle" && thinking === false) payload.reasoning = { enabled: false };
 
-    const response = await fetch(`${base}/chat/completions`, { method: "POST", headers: headers(key), body: JSON.stringify(payload), signal });
-    if (!response.ok) throw await fail(response);
-    return { maxTokens, events: events(response.body, signal) };
+    const order = keyOrder(keys);
+    for (const [i, key] of order.entries()) {
+      const response = await fetch(`${base}/chat/completions`, { method: "POST", headers: headers(key), body: JSON.stringify(payload), signal });
+      if (response.ok) {
+        benchedUntil.delete(key);
+        return { maxTokens, events: events(response.body, signal) };
+      }
+      const err = await fail(response);
+      if (!keySpecific(err) || i === order.length - 1) throw err;
+      benchedUntil.set(key, Date.now() + KEY_BENCH_MS); // try the next key
+    }
   },
 };
 

@@ -148,8 +148,8 @@ const HEALTH_RANK = { ok: 0, unreachable: 1, auth_failed: 2 };
 async function checkProvider(provider) {
   const model = MODELS.find((m) => m.provider === provider.id);
   try {
-    await provider.check(model.id, AbortSignal.timeout(10_000));
-    return { status: "ok", message: `Connected to ${provider.label}.` };
+    const result = await provider.check(model.id, AbortSignal.timeout(10_000));
+    return { status: "ok", message: `Connected to ${provider.label}.`, warnings: result?.warnings ?? [] };
   } catch (err) {
     if (err instanceof UpstreamError && isAuthError(err)) return { status: "auth_failed", message: `${provider.vendor} rejected ${provider.keyEnv}.` };
     if (err instanceof UpstreamError && err.status) return { status: "unreachable", message: `${provider.label} responded with ${err.status}.` };
@@ -169,7 +169,8 @@ async function health(res, fresh) {
   const results = await Promise.all(configured.map(async (p) => [p, await checkProvider(p)]));
   const worst = results.reduce((a, b) => (HEALTH_RANK[b[1].status] > HEALTH_RANK[a[1].status] ? b : a));
   const status = worst[1].status;
-  const message = status === "ok" ? `Connected to ${configured.map((p) => p.label).join(" and ")}.` : results.map(([, r]) => r.message).join(" ");
+  const warnings = results.flatMap(([, r]) => r.warnings ?? []);
+  const message = [status === "ok" ? `Connected to ${configured.map((p) => p.label).join(" and ")}.` : results.map(([, r]) => r.message).join(" "), ...warnings].join(" ");
   // Which deployment answered (non-secret; helps verify rollouts).
   const deployment = process.env.VERCEL_DEPLOYMENT_ID?.slice(-8) ?? process.env.K_REVISION ?? "local";
   const body = { status, message, providers: Object.fromEntries(results.map(([p, r]) => [p.id, r.status])), deployment };

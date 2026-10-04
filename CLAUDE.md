@@ -10,7 +10,7 @@ Public demo for Google AI Studio (Build) / Cloud Run, also deployable on Vercel.
 - AI Studio imports this repo from GitHub (Build → + → Import from GitHub) and injects `GEMINI_API_KEY` (`OPENROUTER_API_KEY` goes in its Secrets); keep `metadata.json` and the `dev`/`start` scripts.
 
 ## Rules
-- Secrets (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `DATABASE_URL`) are read only in `server/`. Never `VITE_`-prefix them or reference `import.meta.env` secrets in `src/`. Never log headers, bodies, query strings or raw IPs (use `logId`).
+- Secrets (`GEMINI_API_KEY`, `OPENROUTER_API_KEY` (+ `_BACKUP`, `OPENROUTER_DEEPSEEK_API_KEY`), `DATABASE_URL`) are read only in `server/`. Never `VITE_`-prefix them or reference `import.meta.env` secrets in `src/`. Never log headers, bodies, query strings or raw IPs (use `logId`).
 - There is no sign-in: rate limits (`server/limits.mjs`) are the abuse protection. Every model-calling route must go through `acquireChat`. Don't claim memory-only limits are global.
 - Serverless runtime facts (verified on Vercel; assume the same on Cloud Run): work after the response ends may never run, and a cancelled request's function can stop before async cleanup — release resources before `res.end()` and rely on short leases (concurrency slots) rather than cleanup.
 - Keep `vercel.json` in sync: security headers = `server/securityHeaders.mjs` (framing allowed only for aistudio.google.com); `api/chat.mjs` maxDuration = `FUNCTION_MAX_DURATION` default (300); `supportsCancellation: true` (without it Stop doesn't reach the function). Tests enforce the first two.

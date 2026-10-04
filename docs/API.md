@@ -34,7 +34,7 @@ On success: `text/event-stream`, one JSON object per `data:` frame:
 
 **Request mapping**
 - Gemini: `assistant` → role `model` (empty turns dropped), `system` → `systemInstruction`, `temperature`/`topP` clamped, `maxOutputTokens` planned as below, `thinkingConfig.includeThoughts: true`. For `reasoning: "toggle"` models the `thinking` flag sends the model's `thinkingOn`/`thinkingOff` level (`medium`/`minimal`); `"always"` models send no level (their lowest level, `minimal`, is rejected).
-- OpenRouter: OpenAI chat format (`system` first), `max_tokens`, `stream: true`, `X-Title: HiveMind`. Thinking off on a `"toggle"` model sends `reasoning: { enabled: false }` (verified to remove reasoning on Nemotron 3 Super/Ultra and Qwen 3.8; it garbled North Mini Code's answer, so that model is `"always"`). `: OPENROUTER PROCESSING` comment lines keep the idle timer alive; a `{ error }` chunk or `finish_reason: "error"` ends the stream with an error.
+- OpenRouter: OpenAI chat format (`system` first), `max_tokens`, `stream: true`, `X-Title: HiveMind`. Keys: `OPENROUTER_API_KEY`, then `OPENROUTER_API_KEY_BACKUP`, then `OPENROUTER_DEEPSEEK_API_KEY` (a model's `keyEnv` goes first: the DeepSeek models start with the DeepSeek key). A key-specific failure (401, 402, a key/disabled 403, a 429 that isn't "rate-limited upstream") retries the request with the next key and benches the failed key (tried last) for 5 minutes. Health checks every key with `GET /key` and stays `ok` while any works, naming rejected keys in `message`. Thinking off on a `"toggle"` model sends `reasoning: { enabled: false }` (verified to remove reasoning on DeepSeek V4.1 Flash/V4 Pro, Nemotron 3 Super/Ultra and Qwen 3.8; it garbled North Mini Code's answer, so that model is `"always"`). `: OPENROUTER PROCESSING` comment lines keep the idle timer alive; a `{ error }` chunk or `finish_reason: "error"` ends the stream with an error.
 
 **Output tokens** (`server/tokens.mjs`): the requested value is clamped to `[256, min(50 000, model.maxOutput)]` and to the context left after the prompt (estimated at 3 chars/token + 256 margin). Gemini only: one recoverable `400` is retried once: an output ceiling in the error message ("supported range is from 1 (inclusive) to N (exclusive)") lowers `maxOutputTokens`; an error mentioning thinking drops `thinkingLevel`.
 
@@ -65,7 +65,7 @@ Client IP: on Vercel (`VERCEL=1`) from `x-real-ip` / `x-forwarded-for`, which Ve
 | Concern | Mechanism |
 |---|---|
 | Access | Public by design. Anyone with the URL can chat; limits bound the cost. |
-| Secrets | `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and the database URL are read only in `server/` (AI Studio Secrets, or Cloud Run / Vercel env vars). Never sent to the browser. |
+| Secrets | `GEMINI_API_KEY`, the `OPENROUTER_*` keys and the database URL are read only in `server/` (AI Studio Secrets, or Cloud Run / Vercel env vars). Never sent to the browser. |
 | Quota abuse | Per-IP minute/day windows, a global daily cap and per-IP concurrency, enforced globally via Postgres. |
 | Cross-site use | Non-GET requests need a same-origin `Origin` (or none) and a JSON body (`415` otherwise); no CORS headers are sent, so other sites' scripts can't call the API. |
 | Input | Body ≤ 2 MB, ≤ 200 messages / 600k chars, system prompt ≤ 8k, numeric params clamped, model must be in the allowlist. |
@@ -79,7 +79,7 @@ Tests: `server/api.test.mjs`.
 
 `server/models.mjs` lists free models only:
 - **Gemini** (free tier; the key AI Studio injects may not have billing): Gemini 3.8 Flash (default), 3.5 Flash, 3.5 Flash-Lite, 3.1 Flash-Lite — each 1,048,576 input / 65,536 output tokens per the model pages (2026-10). `gemini-3.1-pro-preview` is paid-only.
-- **OpenRouter** (`:free` models; a key without credits gets 50 requests/day across them, 1,000/day after buying $10 of credit): Nemotron 3 Super, Nemotron 3 Ultra, Qwen 3.8 27B, North Mini Code — limits from `/api/v1/models` (`context_length`, `top_provider.max_completion_tokens`), each verified with real requests on 2026-10-04. Rejected: `thinkingmachines/inkling:free` (403 "only available on agentic harnesses"); `google/gemma-4-31b-it:free` was rate-limited upstream when probed.
+- **OpenRouter** (a key without credits gets 50 free-model requests/day per account, 1,000/day after buying $10 of credit): DeepSeek V4.1 Flash, DeepSeek V4 Pro, Nemotron 3 Super, Nemotron 3 Ultra, Qwen 3.8 27B, North Mini Code. The DeepSeek models aren't `:free`, but on 2026-10-04 requests from the $0-credit account cost $0 and counted against the free daily limit; if OpenRouter starts charging they fail with 402 `payment_required` — limits from `/api/v1/models` (`context_length`, `top_provider.max_completion_tokens`), each verified with real requests on 2026-10-04. Rejected: `thinkingmachines/inkling:free` (403 "only available on agentic harnesses"); `google/gemma-4-31b-it:free` was rate-limited upstream when probed.
 
 ## Adding a model
 

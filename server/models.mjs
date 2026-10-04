@@ -4,6 +4,7 @@
 // gemini-3.1-pro-preview is paid-only; add it here if the Gemini key has billing enabled.
 //
 // provider: "gemini" | "openrouter" — a model is offered only when its provider's key is set.
+// keyEnv:   (OpenRouter) env var of the key to try first for this model; the other OpenRouter keys are fallbacks.
 // reasoning:
 //   "toggle" — streams reasoning; can be switched off (Gemini: thinkingLevel `thinkingOn`/`thinkingOff`;
 //              OpenRouter: `reasoning: { enabled: false }`)
@@ -13,7 +14,7 @@
 // maxOutput:     Gemini: output limit from the model page (2026-10). OpenRouter: top_provider.max_completion_tokens.
 // contextWindow: input/context limit. The app further caps output at 50,000 (server/tokens.mjs).
 
-/** @typedef {{ id: string, provider: "gemini" | "openrouter", label: string, vendor: string, description: string, reasoning: "toggle" | "always" | "none", thinkingOn?: string, thinkingOff?: string, maxOutput: number, contextWindow: number | null }} ModelInfo */
+/** @typedef {{ id: string, provider: "gemini" | "openrouter", keyEnv?: string, label: string, vendor: string, description: string, reasoning: "toggle" | "always" | "none", thinkingOn?: string, thinkingOff?: string, maxOutput: number, contextWindow: number | null }} ModelInfo */
 
 const GEMINI_MAX_OUTPUT = 65_536;
 const GEMINI_CONTEXT = 1_048_576;
@@ -93,6 +94,30 @@ export const MODELS = [
     reasoning: "toggle",
     maxOutput: 235_929,
     contextWindow: 262_144,
+  },
+  {
+    // Not a `:free` model, but on 2026-10-04 requests from the $0-credit account cost $0 and counted
+    // against the free-model daily limit. If OpenRouter starts charging, it returns 402 ("needs credits").
+    id: "deepseek/deepseek-v4.1-flash",
+    provider: "openrouter",
+    keyEnv: "OPENROUTER_DEEPSEEK_API_KEY",
+    label: "DeepSeek V4.1 Flash",
+    vendor: "DeepSeek",
+    description: "Fast general model with optional step-by-step thinking.",
+    reasoning: "toggle",
+    maxOutput: 943_718,
+    contextWindow: 1_048_576,
+  },
+  {
+    id: "deepseek/deepseek-v4-pro",
+    provider: "openrouter",
+    keyEnv: "OPENROUTER_DEEPSEEK_API_KEY",
+    label: "DeepSeek V4 Pro",
+    vendor: "DeepSeek",
+    description: "DeepSeek's strongest model for hard reasoning and code.",
+    reasoning: "toggle",
+    maxOutput: 384_000,
+    contextWindow: 1_048_576,
   },
   {
     id: "cohere/north-mini-code:free",
