@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { createMemoryStore, createPostgresStore } from "./limits.mjs";
 import { modelOutputLimit, parseLimitFromError, planMaxTokens } from "./tokens.mjs";
-import { MODELS } from "./models.mjs";
+import { SNAPSHOT as MODELS } from "./catalog-snapshot.mjs";
 import { SECURITY_HEADERS } from "./securityHeaders.mjs";
 
 Object.assign(process.env, {
@@ -16,6 +16,7 @@ Object.assign(process.env, {
   GEMINI_BASE_URL: "http://127.0.0.1:1", // unreachable: chat must fail safely
   RATE_LIMIT_CHAT_PER_MIN: "3",
   LOG_REQUESTS: "false",
+  MODEL_REGISTRY_LIVE: "false", // registry from the snapshot: no network
 });
 delete process.env.DATABASE_URL; // the router tests use the in-memory store
 const dbUrl = process.env.POSTGRES_URL_FOR_TESTS;
@@ -82,7 +83,7 @@ describe("output tokens", () => {
   const small = { maxOutput: 65_536, contextWindow: 131_072 };
 
   test("50K is offered when the model supports it", () => {
-    for (const m of MODELS) assert.equal(modelOutputLimit(m), 50_000, m.id); // Gemini allows 65,536
+    for (const m of MODELS) if (m.maxOutput >= 50_000) assert.equal(modelOutputLimit(m), 50_000, m.id);
   });
   test("falls back to the model maximum when it is below the cap", () => {
     assert.equal(modelOutputLimit({ maxOutput: 8192 }), 8192);
@@ -127,7 +128,8 @@ describe("API router (public demo)", () => {
     assert.equal(r.headers.get("set-cookie"), null);
     const body = await r.json();
     // Only GEMINI_API_KEY is set here: OpenRouter models are hidden until OPENROUTER_API_KEY is.
-    assert.deepEqual(body.models.map((m) => m.id), MODELS.filter((m) => m.provider === "gemini").map((m) => m.id));
+    assert.deepEqual(body.models.map((m) => m.id).sort(), MODELS.filter((m) => m.provider === "gemini").map((m) => m.id).sort());
+    assert.equal(body.defaultModel, "auto");
     assert.ok(body.models.every((m) => m.provider === "Gemini API"));
     assert.deepEqual(body.limits.outputCap, 50_000);
     assert.equal(body.limits.rateLimitScope, "per-instance");

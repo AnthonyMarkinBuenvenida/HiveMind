@@ -18,6 +18,11 @@ export interface Settings {
   theme: Theme;
   fontSize: "small" | "medium" | "large";
   chatWidth: "standard" | "wide";
+  // Routing
+  /** Manual model only: let the router try another model when the chosen one fails. */
+  manualFallback: boolean;
+  /** Developer view: show the full routing decision under each reply. */
+  showRouting: boolean;
   // Behavior
   sendOnEnter: boolean;
   expandReasoning: boolean;
@@ -33,11 +38,13 @@ export const GENERATION_DEFAULTS = {
 } satisfies Partial<Settings>;
 
 export const DEFAULT_SETTINGS: Settings = {
-  model: null,
+  model: "auto",
   ...GENERATION_DEFAULTS,
   theme: "dark",
   fontSize: "medium",
   chatWidth: "standard",
+  manualFallback: false,
+  showRouting: false,
   sendOnEnter: true,
   expandReasoning: false,
   sidebarCollapsed: false,
@@ -52,7 +59,8 @@ export function normalizeSettings(stored: unknown): Settings {
   const s = (stored && typeof stored === "object" ? stored : {}) as Record<string, unknown>;
   const d = DEFAULT_SETTINGS;
   return {
-    model: typeof s.model === "string" ? s.model : null,
+    // No saved choice (or the pre-router default) → Auto.
+    model: typeof s.model === "string" && s.model ? s.model : d.model,
     temperature: num(s.temperature, 0, 2, d.temperature),
     topP: num(s.topP, 0.01, 1, d.topP),
     // The UI clamps to the active model's limit; here only enforce a sane positive range.
@@ -62,6 +70,8 @@ export function normalizeSettings(stored: unknown): Settings {
     theme: oneOf(s.theme, THEMES, d.theme),
     fontSize: oneOf(s.fontSize, ["small", "medium", "large"] as const, d.fontSize),
     chatWidth: oneOf(s.chatWidth, ["standard", "wide"] as const, d.chatWidth),
+    manualFallback: bool(s.manualFallback, d.manualFallback),
+    showRouting: bool(s.showRouting, d.showRouting),
     sendOnEnter: bool(s.sendOnEnter, d.sendOnEnter),
     expandReasoning: bool(s.expandReasoning, d.expandReasoning),
     sidebarCollapsed: bool(s.sidebarCollapsed, d.sidebarCollapsed),

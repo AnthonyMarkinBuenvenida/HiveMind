@@ -17,7 +17,7 @@ const SUGGESTIONS: { icon: IconName; title: string; prompt: string }[] = [
 
 function EmptyState() {
   const { setDraft, focusComposer } = useDraftActions();
-  const { activeModel, health, healthMessage } = useServer();
+  const { activeModel, isAuto, health, healthMessage } = useServer();
   const blocked = health === "missing_key" || health === "auth_failed" || health === "unreachable";
 
   return (
@@ -28,7 +28,15 @@ function EmptyState() {
         <p className="empty-sub">
           {activeModel ? (
             <>
-              You're chatting with <strong>{activeModel.label}</strong> via {activeModel.provider}.
+              {isAuto ? (
+                <>
+                  <strong>Auto</strong> picks the best available model for each message.
+                </>
+              ) : (
+                <>
+                  You're chatting with <strong>{activeModel.label}</strong> via {activeModel.provider}.
+                </>
+              )}
             </>
           ) : (
             "Loading available models…"

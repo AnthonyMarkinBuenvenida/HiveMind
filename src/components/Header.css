@@ -77,10 +77,9 @@
   letter-spacing: 0.02em;
   color: var(--text-secondary);
 }
-[role="group"]:first-child > .model-group-head {
-  margin-top: 0;
-  padding-top: 2px;
-  border-top: 0;
+.model-badge-busy {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
 }
 .model-option {
   display: flex;

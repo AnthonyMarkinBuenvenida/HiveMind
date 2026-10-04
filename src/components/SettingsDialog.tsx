@@ -133,6 +133,18 @@ function ChatTab() {
         onChange={(sendOnEnter) => update({ sendOnEnter })}
       />
       <Switch
+        label="Fall back if my chosen model fails"
+        description="When you pick a model yourself and it's unavailable, let Auto answer with another model instead of showing an error."
+        checked={settings.manualFallback}
+        onChange={(manualFallback) => update({ manualFallback })}
+      />
+      <Switch
+        label="Show routing details"
+        description="Developer view: under each reply, show how the router classified the message, which models it considered and why it chose one."
+        checked={settings.showRouting}
+        onChange={(showRouting) => update({ showRouting })}
+      />
+      <Switch
         label="Expand thinking by default"
         description="Show the model's reasoning open after it finishes, instead of collapsed."
         checked={settings.expandReasoning}
@@ -165,7 +177,7 @@ function DataTab() {
           {health === "checking" ? "Checking…" : "Re-check"}
         </button>
       </Row>
-      <Row label="Provider" description={`${[...new Set(models.map((m) => m.provider))].join(" and ")} · ${models.length} models. API keys stay on the server and are never sent to this browser.`} />
+      <Row label="Providers" description={`${[...new Set(models.map((m) => m.provider))].join(" and ")} · ${models.length} models, discovered from the providers' live catalogs. Auto picks one per message. API keys stay on the server and are never sent to this browser.`} />
       <Row label="Export conversations" description={`Download all ${conversations.length} conversations as JSON.`}>
         <button
           type="button"

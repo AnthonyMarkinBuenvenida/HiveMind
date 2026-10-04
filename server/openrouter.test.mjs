@@ -5,7 +5,7 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 
-Object.assign(process.env, { OPENROUTER_API_KEY: "sk-or-test-not-real", GEMINI_API_KEY: "gemini-test-not-real", RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
+Object.assign(process.env, { MODEL_REGISTRY_LIVE: "false", OPENROUTER_API_KEY: "sk-or-test-not-real", GEMINI_API_KEY: "gemini-test-not-real", RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
 delete process.env.DATABASE_URL;
 
 /** Fake upstream. `reply(call)` returns { status, json } or { lines: [string, …] } (raw SSE lines). */
@@ -90,7 +90,7 @@ describe("chat against OpenRouter", () => {
     assert.equal(body.top_p, 0.9);
     assert.equal(body.max_tokens, 1000);
     assert.equal(body.stream, true);
-    assert.equal(body.reasoning, undefined); // thinking on: model default
+    assert.deepEqual(body.reasoning, { effort: "medium" }); // thinking on: effort for the task tier ("c" is a general task)
   });
 
   test("thinking off sends reasoning.enabled=false on toggle models only", async () => {
@@ -114,6 +114,8 @@ describe("chat against OpenRouter", () => {
     });
     const { status, events } = await chat(ask({ maxTokens: 1000 }));
     assert.equal(status, 200);
+    assert.equal(events[0].route.provider, "OpenRouter");
+    delete events[0].route;
     assert.deepEqual(events, [
       { type: "start", model: MODEL, maxTokens: 1000, limitSeconds: 600 },
       { type: "reasoning", text: "Thinking…" },
@@ -156,8 +158,9 @@ describe("chat against OpenRouter", () => {
   test("health checks every configured provider", async () => {
     reply = (c) => (c.path === "/api/v1/key" ? { status: 401, json: { error: { message: "User not found.", code: 401 } } } : { status: 200, json: { name: "models/gemini-3.8-flash" } });
     const r = await (await fetch(base + "/api/health?fresh")).json();
-    assert.equal(r.status, "auth_failed");
+    // Gemini still works, so the app is usable: ok overall, with a warning naming the failing provider.
+    assert.equal(r.status, "ok");
     assert.deepEqual(r.providers, { gemini: "ok", openrouter: "auth_failed" });
-    assert.match(r.message, /OPENROUTER_API_KEY/);
+    assert.match(r.message, /Connected to Gemini API\. OpenRouter rejected OPENROUTER_API_KEY/);
   });
 });

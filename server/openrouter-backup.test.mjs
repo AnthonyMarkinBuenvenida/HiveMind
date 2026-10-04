@@ -10,7 +10,7 @@ const MAIN = "sk-or-main-test";
 const BACKUP = "sk-or-backup-test";
 const DEEPSEEK = "sk-or-deepseek-test";
 const BACKUP_2 = "sk-or-backup-2-test";
-Object.assign(process.env, { OPENROUTER_API_KEY: MAIN, OPENROUTER_API_KEY_BACKUP: BACKUP, OPENROUTER_API_KEY_BACKUP_2: BACKUP_2, OPENROUTER_DEEPSEEK_API_KEY: DEEPSEEK, RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
+Object.assign(process.env, { MODEL_REGISTRY_LIVE: "false", OPENROUTER_API_KEY: MAIN, OPENROUTER_API_KEY_BACKUP: BACKUP, OPENROUTER_API_KEY_BACKUP_2: BACKUP_2, OPENROUTER_DEEPSEEK_API_KEY: DEEPSEEK, RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
 delete process.env.GEMINI_API_KEY;
 delete process.env.GOOGLE_API_KEY;
 delete process.env.DATABASE_URL;

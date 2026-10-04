@@ -9,14 +9,14 @@
 
 ### `GET /api/models`
 ```json
-{ "defaultModel": "…", "models": [{ "id", "label", "vendor", "provider", "description", "reasoning", "maxOutput", "contextWindow" }],
+{ "defaultModel": "auto", "models": [{ "id", "label", "vendor", "provider", "description", "reasoning", "vision", "free", "maxOutput", "contextWindow", "status" }],
   "limits": { "outputCap": 50000, "streamSeconds": 285, "rateLimitScope": "global" } }
 ```
-Only models whose provider has a key are listed (all of them when no key is set). `provider` is the display name (`"Gemini API"`, `"OpenRouter"`). `maxOutput` is what this deployment allows for the model: `min(MAX_OUTPUT_TOKENS, model output limit)`. `rateLimitScope` is `per-instance` when no database is configured.
+The registry's models whose provider has a key (all of them when no key is set), by provider and strongest benchmark first. `provider` is the display name (`"Gemini API"`, `"OpenRouter"`); `status` is the router's runtime health (`ok` / `degraded` / `cooling`). `defaultModel` is `DEFAULT_MODEL` when it names a listed model, else `"auto"`. `maxOutput` is what this deployment allows for the model: `min(MAX_OUTPUT_TOKENS, model output limit)`. `rateLimitScope` is `per-instance` when no database is configured.
 
 ### `POST /api/chat`
 ```json
-{ "model": "gemini-3.8-flash", "messages": [{ "role": "user", "content": "…" }],
+{ "model": "auto", "messages": [{ "role": "user", "content": "…" }],
   "system": "optional, ≤ 8000 chars", "temperature": 0.6, "topP": 0.95, "maxTokens": 50000, "thinking": true }
 ```
 Validation failures return `{ error: { message, code } }` before streaming. Limits: 200 messages, 600k chars, 2 MB body; the last message must be a non-empty user turn.
@@ -25,7 +25,7 @@ On success: `text/event-stream`, one JSON object per `data:` frame:
 
 | Event | Payload |
 |---|---|
-| `start` | `{ model, maxTokens, limitSeconds }` — `maxTokens` is what was actually sent (may be below the request) |
+| `start` | `{ model, maxTokens, limitSeconds, route, debug? }` — `model` is the model that answers (chosen by the router in Auto mode); `maxTokens` is what was actually sent (may be below the request); `route` = `{ mode, provider, model, task, reason, fallbackFrom }`; `debug` (only when the request has `debug: true`) = the full routing decision |
 | `reasoning` | `{ text }` — reasoning delta (Gemini: thought-summary parts, `thought: true`; OpenRouter: `delta.reasoning`) |
 | `content` | `{ text }` — answer delta |
 | `usage` | `{ usage: { prompt, completion, reasoning } }` — `completion` = answer + thinking tokens |
@@ -33,8 +33,9 @@ On success: `text/event-stream`, one JSON object per `data:` frame:
 | `error` | `{ message, code }` — mid-stream failure; the stream then ends |
 
 **Request mapping**
-- Gemini: `assistant` → role `model` (empty turns dropped), `system` → `systemInstruction`, `temperature`/`topP` clamped, `maxOutputTokens` planned as below, `thinkingConfig.includeThoughts: true`. For `reasoning: "toggle"` models the `thinking` flag sends the model's `thinkingOn`/`thinkingOff` level (`medium`/`minimal`); `"always"` models send no level (their lowest level, `minimal`, is rejected).
-- OpenRouter: OpenAI chat format (`system` first), `max_tokens`, `stream: true`, `X-Title: HiveMind`. Keys: `OPENROUTER_API_KEY`, then `OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2`, then `OPENROUTER_DEEPSEEK_API_KEY` (a model's `keyEnv` goes first: the DeepSeek models start with the DeepSeek key). A key-specific failure (401, 402, a key/disabled 403, a 429 that isn't "rate-limited upstream") retries the request with the next key and benches the failed key (tried last) for 5 minutes. Health checks every key with `GET /key` and stays `ok` while any works, naming rejected keys in `message`. Thinking off on a `"toggle"` model sends `reasoning: { enabled: false }` (verified to remove reasoning on DeepSeek V4.1 Flash/V4 Pro, Nemotron 3 Super/Ultra and Qwen 3.8; it garbled North Mini Code's answer, so that model is `"always"`). `: OPENROUTER PROCESSING` comment lines keep the idle timer alive; a `{ error }` chunk or `finish_reason: "error"` ends the stream with an error.
+- Router: `model: "auto"` (or omitted) routes per message; a model id is used as-is unless `allowFallback: true`. Optional `continuation` (the Continue button) and `previousModel` give the router conversation context. The reasoning effort comes from the task tier and the `thinking` flag (docs/ROUTING.md).
+- Gemini: `assistant` → role `model` (empty turns dropped), `system` → `systemInstruction`, `temperature`/`topP` clamped, `maxOutputTokens` planned as below, `thinkingConfig.includeThoughts: true` plus `thinkingLevel` from the effort (thinking off = the model's lowest level: `minimal` where supported, else `low`).
+- OpenRouter: OpenAI chat format (`system` first), `max_tokens`, `stream: true`, `X-Title: HiveMind`. Keys: `OPENROUTER_API_KEY`, then `OPENROUTER_API_KEY_BACKUP`, `OPENROUTER_API_KEY_BACKUP_2`, then `OPENROUTER_DEEPSEEK_API_KEY` (a model's `keyEnv` goes first: the DeepSeek models start with the DeepSeek key). A key-specific failure (401, 402, a key/disabled 403, a 429 that isn't "rate-limited upstream") retries the request with the next key and benches the failed key (tried last) for 5 minutes. Health checks every key with `GET /key` and stays `ok` while any works, naming rejected keys in `message`. Effort is sent as `reasoning: { effort }` (verified on Qwen 3.8); thinking off on a `"toggle"` model sends `reasoning: { enabled: false }` (verified to remove reasoning on DeepSeek V4.1 Flash/V4 Pro, Nemotron 3 Super/Ultra and Qwen 3.8; it garbled North Mini Code's answer, so that model is `"always"`). `: OPENROUTER PROCESSING` comment lines keep the idle timer alive; a `{ error }` chunk or `finish_reason: "error"` ends the stream with an error.
 
 **Output tokens** (`server/tokens.mjs`): the requested value is clamped to `[256, min(50 000, model.maxOutput)]` and to the context left after the prompt (estimated at 3 chars/token + 256 margin). Gemini only: one recoverable `400` is retried once: an output ceiling in the error message ("supported range is from 1 (inclusive) to N (exclusive)") lowers `maxOutputTokens`; an error mentioning thinking drops `thinkingLevel`.
 
@@ -43,7 +44,7 @@ On success: `text/event-stream`, one JSON object per `data:` frame:
 **Cancellation**: when the client disconnects (Stop, closed tab) the upstream request is aborted so the provider stops generating. On Vercel this requires `supportsCancellation: true` on the function.
 
 ### Error codes
-`forbidden_origin` 403 · `not_found` 404 · `method_not_allowed` 405 · `unsupported_media_type` 415 · `missing_key` 503 · `invalid_json` / `invalid_request` / `invalid_model` 400 · `too_large` / `too_long` 413 · `rate_limited` / `too_many_streams` 429 (with `Retry-After`) · `auth_failed` / `model_unavailable` / `upstream_error` / `upstream_unreachable` 502 · `payment_required` 402 (OpenRouter needs credits) · `upstream_busy` 503 ("high demand") · `upstream_timeout` 504 · in-stream: `idle_timeout`, `max_duration`, `blocked`, `upstream_error` (the provider failed mid-stream; Gemini's SDK drops the error event, so any stream that ends without a finish reason is reported as this). Unexpected failures return 500 `server_error` with a generic message; details go to the function log only. Unknown `/api/*` paths on Vercel get the platform's 404.
+`forbidden_origin` 403 · `not_found` 404 · `method_not_allowed` 405 · `unsupported_media_type` 415 · `missing_key` 503 · `invalid_json` / `invalid_request` / `invalid_model` 400 · `too_large` / `too_long` 413 · `rate_limited` / `too_many_streams` 429 (with `Retry-After`) · `auth_failed` / `model_unavailable` / `upstream_error` / `upstream_unreachable` 502 · `invalid_model` 400 also for a manual model that is no longer available · `payment_required` 402 (OpenRouter needs credits) · `upstream_busy` 503 ("high demand") · `upstream_timeout` 504 · in-stream: `idle_timeout`, `max_duration`, `blocked`, `upstream_error` (the provider failed mid-stream; Gemini's SDK drops the error event, so any stream that ends without a finish reason is reported as this). Unexpected failures return 500 `server_error` with a generic message; details go to the function log only. Unknown `/api/*` paths on Vercel get the platform's 404.
 
 ## Rate limiting (`server/limits.mjs`)
 
@@ -75,18 +76,6 @@ Client IP: on Vercel (`VERCEL=1`) from `x-real-ip` / `x-forwarded-for`, which Ve
 
 Tests: `server/api.test.mjs`.
 
-## Models
+## Models and routing
 
-`server/models.mjs` lists free models only:
-- **Gemini** (free tier; the key AI Studio injects may not have billing): Gemini 3.8 Flash (default), 3.5 Flash, 3.5 Flash-Lite, 3.1 Flash-Lite — each 1,048,576 input / 65,536 output tokens per the model pages (2026-10). `gemini-3.1-pro-preview` is paid-only.
-- **OpenRouter** (a key without credits gets 50 free-model requests/day per account, 1,000/day after buying $10 of credit): DeepSeek V4.1 Flash, DeepSeek V4 Pro, Nemotron 3 Super, Nemotron 3 Ultra, Qwen 3.8 27B, North Mini Code. The DeepSeek models aren't `:free`, but on 2026-10-04 requests from the $0-credit account cost $0 and counted against the free daily limit; if OpenRouter starts charging they fail with 402 `payment_required` — limits from `/api/v1/models` (`context_length`, `top_provider.max_completion_tokens`), each verified with real requests on 2026-10-04. Rejected: `thinkingmachines/inkling:free` (403 "only available on agentic harnesses"); `google/gemma-4-31b-it:free` was rate-limited upstream when probed.
-
-## Adding a model
-
-1. Gemini: check the model page on ai.google.dev for its input/output limits, thinking levels and free-tier availability. OpenRouter: read `context_length`, `top_provider.max_completion_tokens` and `supported_parameters` from `GET https://openrouter.ai/api/v1/models`.
-2. Add it to `MODELS` with `provider`, `reasoning` (Gemini `"toggle"` needs `thinkingOn`/`thinkingOff`; OpenRouter `"toggle"` only if `reasoning: { enabled: false }` really removes reasoning), `maxOutput` and `contextWindow`.
-3. Verify with a real request:
-   ```bash
-   curl -s http://localhost:3000/api/chat -H "Content-Type: application/json" \
-     -d '{"model":"<id>","messages":[{"role":"user","content":"Say hi."}],"thinking":false,"maxTokens":1000}'
-   ```
+Models aren't a fixed list: `server/registry.mjs` discovers them from the providers' live catalogs, and `server/router/` picks one per message in Auto mode, with health tracking and failover. See **docs/ROUTING.md**.

@@ -5,7 +5,7 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 
-Object.assign(process.env, { GEMINI_API_KEY: "test-key-not-real", RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
+Object.assign(process.env, { MODEL_REGISTRY_LIVE: "false", GEMINI_API_KEY: "test-key-not-real", RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
 delete process.env.DATABASE_URL;
 
 /** Fake upstream. `reply(call)` returns { status, json } or { sse: [chunk, …], raw?: trailing text }. */
@@ -93,7 +93,8 @@ describe("chat against the Gemini API", () => {
     assert.equal(g.temperature, 0.3);
     assert.equal(g.topP, 0.9);
     assert.equal(g.maxOutputTokens, 1000);
-    assert.deepEqual(g.thinkingConfig, { includeThoughts: true }); // "always" model: no level sent
+    // The last message ("c") is a general task: medium thinking effort.
+    assert.deepEqual(g.thinkingConfig, { includeThoughts: true, thinkingLevel: "medium" });
   });
 
   test("streams thoughts as reasoning, text as content, then usage and done", async () => {
@@ -107,6 +108,9 @@ describe("chat against the Gemini API", () => {
     });
     const { status, events } = await chat(ask({ maxTokens: 1000 }));
     assert.equal(status, 200);
+    const { route, ...start } = events[0];
+    assert.deepEqual(route, { mode: "manual", provider: "Gemini API", model: "Gemini 3.8 Flash", task: "simple", reason: "You chose Gemini 3.8 Flash.", fallbackFrom: [] });
+    events[0] = start;
     assert.deepEqual(events, [
       { type: "start", model: "gemini-3.8-flash", maxTokens: 1000, limitSeconds: 600 },
       { type: "reasoning", text: "Let me think." },
@@ -152,12 +156,12 @@ describe("chat against the Gemini API", () => {
     assert.equal(res.json.error.code, "upstream_busy");
   });
 
-  test("thinking toggle sends the model's on/off level", async () => {
+  test("thinking off sends the lowest level; thinking on sends the level for the task", async () => {
     reply = () => ({ sse: [text("ok"), done] });
     await chat(ask({ model: "gemini-3.5-flash-lite", thinking: false }));
     await chat(ask({ model: "gemini-3.5-flash-lite", thinking: true }));
     assert.equal(calls[0].body.generationConfig.thinkingConfig.thinkingLevel.toLowerCase(), "minimal");
-    assert.equal(calls[1].body.generationConfig.thinkingConfig.thinkingLevel.toLowerCase(), "medium");
+    assert.equal(calls[1].body.generationConfig.thinkingConfig.thinkingLevel.toLowerCase(), "low"); // "hi" is a fast task
   });
 
   test("a rejected thinking level is retried once without it", async () => {
@@ -202,6 +206,6 @@ describe("chat against the Gemini API", () => {
     reply = () => ({ status: 200, json: { name: "models/gemini-3.8-flash" } });
     const r = await (await fetch(base + "/api/health?fresh")).json();
     assert.equal(r.status, "ok");
-    assert.match(calls[0].path, /\/models\/gemini-3\.8-flash/);
+    assert.match(calls[0].path, /\/models\/gemini-/);
   });
 });

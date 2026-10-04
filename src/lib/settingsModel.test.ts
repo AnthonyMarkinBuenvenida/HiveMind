@@ -28,6 +28,14 @@ test("settings saved by older versions keep their values", () => {
   assert.equal(s.sidebarCollapsed, true);
 });
 
+test("Auto is the default model; a saved manual choice is kept", () => {
+  assert.equal(DEFAULT_SETTINGS.model, "auto");
+  assert.equal(normalizeSettings({ model: null }).model, "auto");
+  assert.equal(normalizeSettings({}).model, "auto");
+  assert.equal(normalizeSettings({ model: "gemini-3.8-flash" }).model, "gemini-3.8-flash");
+  assert.equal(normalizeSettings({}).manualFallback, false);
+});
+
 test("a large max output (50K) is preserved for the UI to clamp per model", () => {
   assert.equal(normalizeSettings({ maxTokens: 50_000 }).maxTokens, 50_000);
 });

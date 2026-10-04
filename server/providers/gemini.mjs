@@ -54,8 +54,11 @@ export const geminiProvider = {
     }
   },
 
-  /** Starts a streamed reply. Throws UpstreamError (or a network error) before anything streams. */
-  async open({ model, messages, system, temperature, topP, maxTokens, thinking, signal }) {
+  /**
+   * Starts a streamed reply. Throws UpstreamError (or a network error) before anything streams.
+   * effort: null (model default) | "off" (lowest level the model accepts) | a level from model.efforts.
+   */
+  async open({ model, messages, system, temperature, topP, maxTokens, effort, signal }) {
     // Gemini roles are "user" and "model"; empty turns (e.g. a reply stopped before any text) are rejected.
     const contents = messages
       .filter((m) => m.content.trim())
@@ -64,10 +67,8 @@ export const geminiProvider = {
     if (system) genConfig.systemInstruction = system;
     if (model.reasoning !== "none") {
       genConfig.thinkingConfig = { includeThoughts: true };
-      if (model.reasoning === "toggle") {
-        const level = thinking === false ? model.thinkingOff : model.thinkingOn;
-        if (level) genConfig.thinkingConfig.thinkingLevel = level;
-      }
+      const level = effort === "off" ? model.efforts?.[0] : effort;
+      if (level) genConfig.thinkingConfig.thinkingLevel = level;
     }
     const request = () => gemini().models.generateContentStream({ model: model.id, contents, config: genConfig });
 

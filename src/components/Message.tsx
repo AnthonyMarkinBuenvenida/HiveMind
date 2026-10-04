@@ -1,10 +1,11 @@
 import { memo, useEffect, useState } from "react";
+import { CONTINUE_PROMPT } from "../lib/api";
 import { copyText, formatBytes, formatDuration } from "../lib/util";
 import { useChat } from "../state/chat";
 import { useServer } from "../state/server";
 import { useSettings } from "../state/settings";
 import { useToast } from "../state/toast";
-import type { Message } from "../types";
+import { AUTO_MODEL_ID, type Message } from "../types";
 import { Icon, Logo } from "./Icon";
 import { Markdown } from "./Markdown";
 import "./Message.css";
@@ -49,9 +50,60 @@ function Reasoning({ text, ms, active }: { text: string; ms?: number; active: bo
   );
 }
 
-const CONTINUE_PROMPT = "Continue exactly where you stopped. Do not repeat anything you already wrote.";
 
 /** Seconds since `since`, ticking while mounted (used only while waiting for the first token). */
+/** Developer view of a routing decision, in the documented "Request → …" format. */
+function formatDecision(debug: unknown, route: NonNullable<Message["route"]>): string {
+  const d = debug as {
+    task: { type: string; tier: string; signals: string[] };
+    requirements: { promptTokens: number; outputTokens: number; quality: string; reasoning: boolean; vision: boolean };
+    candidates: { model: string; score: number }[];
+    excluded: { id: string; reason: string }[];
+    attempts: { model: string; ok: boolean; error?: string; ms: number }[];
+    fallbacksAvailable: string[];
+  };
+  const req = d.requirements;
+  const needs = [`~${req.promptTokens.toLocaleString()} prompt tokens`, `${req.outputTokens.toLocaleString()} output`, `ranked by ${req.quality} benchmark`, req.reasoning ? "reasoning" : "", req.vision ? "image input" : ""].filter(Boolean);
+  return [
+    "Request",
+    `→ Task type: ${d.task.type} (${d.task.tier} tier)${d.task.signals.length ? ` · ${d.task.signals.join("; ")}` : ""}`,
+    `→ Requirements: ${needs.join(", ")}`,
+    `→ Eligible models: ${d.candidates.map((c) => `${c.model} (${c.score})`).join(", ") || "none"}`,
+    d.excluded.length ? `→ Excluded: ${d.excluded.map((e) => `${e.id} (${e.reason})`).join(", ")}` : "",
+    `→ Attempts: ${d.attempts.map((a) => `${a.model} ${a.ok ? "ok" : a.error} ${a.ms} ms`).join(" → ")}`,
+    `→ Selected provider: ${route.provider}`,
+    `→ Selected model: ${route.model}`,
+    `→ Reason: ${route.reason}`,
+    `→ Fallbacks available: ${d.fallbacksAvailable.join(", ") || "none"}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** "Auto · Gemini API" chip that expands to why this model answered (and, for developers, the full decision). */
+function RouteDetails({ message }: { message: Message }) {
+  const [open, setOpen] = useState(false);
+  const route = message.route;
+  if (!route || (route.mode === "manual" && !route.fallbackFrom.length && !message.routeDebug)) return null;
+  const label = route.mode === AUTO_MODEL_ID ? `Auto · ${route.provider}` : `${route.provider} · fallback`;
+  return (
+    <>
+      <button type="button" className={`msg-route${open ? " is-open" : ""}`} aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span>{label}</span>
+        {route.fallbackFrom.length > 0 && <span className="msg-route-flag">fallback</span>}
+        <Icon name="chevronRight" size={12} className="msg-route-chevron" />
+      </button>
+      {open && (
+        <div className="msg-route-panel">
+          <p>{route.reason}</p>
+          {route.fallbackFrom.length > 0 && <p>Tried first: {route.fallbackFrom.join(", ")}.</p>}
+          {message.routeDebug != null && <pre className="msg-route-debug">{formatDecision(message.routeDebug, route)}</pre>}
+        </div>
+      )}
+    </>
+  );
+}
+
 function useElapsed(since: number) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -155,7 +207,8 @@ function UserMessage({ message, conversationId }: { message: Message; conversati
 
 function AssistantMessage({ message, conversationId, isLast }: { message: Message; conversationId: string; isLast: boolean }) {
   const { regenerate, send, streaming } = useChat();
-  const { modelLabel } = useServer();
+  const { modelLabel, isAuto, autoModel } = useServer();
+  const { update } = useSettings();
   const isStreaming = message.status === "streaming";
   const cutOff = !!message.content && ((message.status === "done" && message.finishReason === "length") || (message.status === "error" && message.errorCode === "max_duration"));
   const continueButton = isLast && cutOff && (
@@ -173,8 +226,9 @@ function AssistantMessage({ message, conversationId, isLast }: { message: Messag
         <span className="msg-avatar" aria-hidden="true">
           <Logo size={20} />
         </span>
-        <span className="msg-model">{modelLabel(message.model)}</span>
+        <span className="msg-model">{message.model === AUTO_MODEL_ID ? "Auto" : modelLabel(message.model)}</span>
       </div>
+      {message.route && <div className="msg-route-row"><RouteDetails message={message} /></div>}
 
       {message.reasoning && <Reasoning text={message.reasoning} ms={message.reasoningMs} active={thinkingNow} />}
 
@@ -212,6 +266,21 @@ function AssistantMessage({ message, conversationId, isLast }: { message: Messag
                 <Icon name="refresh" size={15} />
                 Retry
               </button>
+              {/* A manually chosen model failed: offer the router instead of switching silently. */}
+              {!isAuto && autoModel && message.errorCode !== "max_duration" && message.errorCode !== "too_many_streams" && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={!!streaming}
+                  onClick={() => {
+                    update({ model: AUTO_MODEL_ID });
+                    regenerate(conversationId, message.id, autoModel);
+                  }}
+                >
+                  <Icon name="bolt" size={15} />
+                  Switch to Auto
+                </button>
+              )}
             </div>
           )}
         </div>

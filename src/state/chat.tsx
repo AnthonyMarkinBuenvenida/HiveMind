@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, streamChat, toApiContent, type ChatRequest } from "../lib/api";
+import { ApiError, CONTINUE_PROMPT, streamChat, toApiContent, type ChatRequest } from "../lib/api";
 import { preloadRenderers } from "../lib/renderers";
 import { titleFrom, uid } from "../lib/util";
-import type { AttachedFile, Message, ModelInfo } from "../types";
+import { AUTO_MODEL_ID, type AttachedFile, type Message, type ModelInfo } from "../types";
 import { useConversationActions, type MessagePatch } from "./conversations";
 import { useDraftActions } from "./draft";
 import { useServer } from "./server";
@@ -17,7 +17,8 @@ interface ChatContextValue {
   streaming: Streaming | null;
   send: (text: string, files: AttachedFile[]) => boolean;
   stop: () => void;
-  regenerate: (conversationId: string, assistantMessageId: string) => void;
+  /** Re-runs a reply; `model` overrides the active model (e.g. "Switch to Auto"). */
+  regenerate: (conversationId: string, assistantMessageId: string, model?: ModelInfo) => void;
   editAndResend: (conversationId: string, userMessageId: string, text: string) => void;
   newChat: () => void;
 }
@@ -81,6 +82,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let streamErrorCode: string | undefined;
       let finishReason: string | null = null;
       const settings = settingsRef.current;
+      const previousModel = [...history].reverse().find((m) => m.role === "assistant" && m.content && m.model && m.model !== AUTO_MODEL_ID)?.model;
       try {
         await streamChat(
           {
@@ -91,12 +93,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             topP: settings.topP,
             maxTokens: Math.min(settings.maxTokens, model.maxOutput),
             thinking: model.reasoning === "toggle" ? settings.thinking : true,
+            allowFallback: model.id !== AUTO_MODEL_ID && settings.manualFallback,
+            debug: settings.showRouting || undefined,
+            continuation: history.at(-1)?.content === CONTINUE_PROMPT || undefined,
+            previousModel,
           },
           ctrl.signal,
           (event) => {
             switch (event.type) {
               case "start":
-                if (event.maxTokens) patch({ maxTokens: event.maxTokens });
+                // The router reports which model actually answers (in Auto mode, chosen per message).
+                patch({ model: event.model, maxTokens: event.maxTokens, route: event.route, routeDebug: event.debug });
                 break;
               case "reasoning":
                 reasoningStart ??= Date.now();
@@ -165,12 +172,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const regenerate = useCallback(
-    (conversationId: string, assistantMessageId: string) => {
+    (conversationId: string, assistantMessageId: string, model?: ModelInfo) => {
       const conversation = getState().conversations.find((c) => c.id === conversationId);
       const idx = conversation?.messages.findIndex((m) => m.id === assistantMessageId) ?? -1;
-      if (!conversation || idx < 0 || streaming || !activeModel) return;
+      const target = model ?? activeModel;
+      if (!conversation || idx < 0 || streaming || !target) return;
       dispatch({ type: "truncateFrom", id: conversationId, messageId: assistantMessageId });
-      void run(conversationId, conversation.messages.slice(0, idx), activeModel);
+      void run(conversationId, conversation.messages.slice(0, idx), target);
     },
     [getState, streaming, activeModel, dispatch, run],
   );

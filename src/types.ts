@@ -14,6 +14,23 @@ export interface ModelInfo {
   maxOutput: number;
   /** Total prompt + output tokens, when the model enforces one (else null). */
   contextWindow: number | null;
+  vision?: boolean;
+  free?: boolean;
+  /** Runtime health from the router: "cooling" = temporarily skipped after failures. */
+  status?: "ok" | "degraded" | "cooling";
+}
+
+/** The automatic router, shown in the model menu like a model. */
+export const AUTO_MODEL_ID = "auto";
+
+/** How a reply was routed (from the stream's start event). */
+export interface RouteInfo {
+  mode: "auto" | "manual";
+  provider: string;
+  model: string;
+  task: string;
+  reason: string;
+  fallbackFrom: string[];
 }
 
 /** Deployment limits reported by GET /api/models. */
@@ -53,6 +70,9 @@ export interface Message {
   maxTokens?: number;
   usage?: Usage;
   finishReason?: string | null;
+  /** Assistant-only: how the router chose the model (and, with routing details on, the full decision). */
+  route?: RouteInfo;
+  routeDebug?: unknown;
 }
 
 export interface Conversation {
@@ -67,7 +87,7 @@ export type HealthStatus = "checking" | "ok" | "missing_key" | "auth_failed" | "
 
 /** Normalized events streamed by POST /api/chat (see server/api.mjs). */
 export type ChatEvent =
-  | { type: "start"; model: string; maxTokens?: number; limitSeconds?: number }
+  | { type: "start"; model: string; maxTokens?: number; limitSeconds?: number; route?: RouteInfo; debug?: unknown }
   | { type: "reasoning"; text: string }
   | { type: "content"; text: string }
   | { type: "usage"; usage: Usage }

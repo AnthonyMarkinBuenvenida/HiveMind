@@ -63,7 +63,11 @@ export function toApiContent(message: Message): string {
   return message.content ? `${files}\n\n${message.content}` : files;
 }
 
+/** Sent by the Continue button; the router keeps continuations on the model that wrote the answer. */
+export const CONTINUE_PROMPT = "Continue exactly where you stopped. Do not repeat anything you already wrote.";
+
 export interface ChatRequest {
+  /** A model id, or "auto" for the router. */
   model: string;
   messages: { role: "user" | "assistant"; content: string }[];
   system?: string;
@@ -71,6 +75,13 @@ export interface ChatRequest {
   topP: number;
   maxTokens: number;
   thinking: boolean;
+  /** Manual model only: allow the router to try another model if it fails. */
+  allowFallback?: boolean;
+  /** Ask for the full routing decision (developer view). */
+  debug?: boolean;
+  continuation?: boolean;
+  /** Model that wrote the previous answer (routing context for follow-ups and Continue). */
+  previousModel?: string;
 }
 
 /** Streams a chat completion. Resolves when the stream ends; throws ApiError, or the abort reason if cancelled. */

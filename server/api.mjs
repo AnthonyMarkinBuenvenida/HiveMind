@@ -1,8 +1,11 @@
-// Server-side API layer — the only code that sees the provider keys (GEMINI_API_KEY, OPENROUTER_API_KEY).
+// Server-side API layer — the only code that sees the provider keys (GEMINI_API_KEY, OPENROUTER_*).
 // Runs inside server.ts (Express: local dev, Google AI Studio, Cloud Run) and as Vercel
 // functions (api/*.mjs). HiveMind is a public demo: there is no sign-in; abuse protection is
 // rate limiting (server/limits.mjs), request limits and validation.
-// Provider specifics (request format, stream parsing) live in server/providers/.
+//
+//   registry.mjs        which models exist (live provider catalogs, normalized)
+//   router/             task classification, scoring, health tracking (docs/ROUTING.md)
+//   providers/          one adapter per provider (request format, stream parsing)
 //
 // Routes:
 //   GET  /api/health  -> { status: "ok" | "missing_key" | "auth_failed" | "unreachable", message, providers } (?fresh: at most every 5s)
@@ -12,20 +15,28 @@
 import { waitUntil } from "@vercel/functions";
 import { clientIp, isSameOrigin, logId } from "./http.mjs";
 import { acquireChat, LimitError, limitScope } from "./limits.mjs";
-import { MODELS, findModel, defaultModelId } from "./models.mjs";
 import { geminiProvider } from "./providers/gemini.mjs";
 import { openrouterProvider } from "./providers/openrouter.mjs";
 import { UpstreamError } from "./providers/upstream.mjs";
+import { getRegistry } from "./registry.mjs";
+import * as health from "./router/health.mjs";
+import { effortFor, MAX_ATTEMPTS, plan, reasonFor } from "./router/route.mjs";
 import { modelOutputLimit, outputCap, planMaxTokens } from "./tokens.mjs";
 
+export const AUTO = "auto";
 const PROVIDERS = { gemini: geminiProvider, openrouter: openrouterProvider };
 
-// How long a provider may take to start streaming (send response headers). OpenRouter's free models
-// can queue; the wait is always capped below the stream limit so a slow start can still produce an answer.
+// How long a request may wait for its first token in total (OpenRouter's free models can queue).
+// Always capped below the stream limit so a slow start can still produce an answer.
 function headersTimeoutMs() {
   const s = Number(process.env.UPSTREAM_QUEUE_TIMEOUT_SECONDS);
   const wanted = Number.isFinite(s) && s > 0 ? s * 1000 : 120_000;
   return Math.min(wanted, streamLimitMs() - 30_000);
+}
+// In Auto mode one model gets this long to start before the router tries the next one.
+function attemptTimeoutMs() {
+  const s = Number(process.env.ROUTER_ATTEMPT_TIMEOUT_SECONDS);
+  return Number.isFinite(s) && s > 0 ? s * 1000 : 45_000;
 }
 const IDLE_TIMEOUT_MS = 60_000; // max silence between streamed chunks
 const HEALTH_TTL_MS = 60_000;
@@ -57,10 +68,16 @@ class HttpError extends Error {
   }
 }
 
-/** Models whose provider has a key; every model when none is configured (health then reports missing_key). */
-function availableModels() {
-  const ready = MODELS.filter((m) => PROVIDERS[m.provider].configured());
-  return ready.length ? ready : MODELS;
+/** Registry models whose provider has a key; every model when none is configured (health then reports missing_key). */
+async function availableModels() {
+  const { models } = await getRegistry();
+  const ready = models.filter((m) => PROVIDERS[m.provider]?.configured());
+  return ready.length ? ready : models;
+}
+
+function defaultModelId(models) {
+  const configured = process.env.DEFAULT_MODEL;
+  return configured && (configured === AUTO || models.some((m) => m.id === configured)) ? configured : AUTO;
 }
 
 function sendJson(res, status, body, headers = {}) {
@@ -129,6 +146,7 @@ function midStreamMessage(provider) {
 
 /** UpstreamError (or anything else thrown while talking to a provider) -> user-readable HttpError. */
 function mapUpstreamError(err, provider) {
+  if (err?.attemptTimeout) return new HttpError(504, "The model didn't start responding in time. It's busy right now; try again or pick another model.", "upstream_timeout");
   if (!(err instanceof UpstreamError)) return new HttpError(502, `Could not reach ${provider.label}. Try again shortly.`, "upstream_unreachable");
   const { status, detail } = err;
   if (err.kind === "midstream") return new HttpError(502, midStreamMessage(provider), "upstream_error");
@@ -141,23 +159,48 @@ function mapUpstreamError(err, provider) {
   return new HttpError(502, `${provider.label} returned an error (${status}). Try again shortly.`, "upstream_error");
 }
 
+/**
+ * How a failed attempt affects health and whether another model may be tried.
+ * @returns {{ kind: string, provider?: { kind: string, scope?: string }, retryable: boolean }}
+ */
+function failureKind(err) {
+  if (err?.attemptTimeout) return { kind: "timeout", retryable: true };
+  if (!(err instanceof UpstreamError)) return { kind: "overloaded", provider: { kind: "unreachable" }, retryable: true };
+  const { status, detail } = err;
+  if (err.kind === "midstream") return { kind: "overloaded", retryable: true };
+  if (isAuthError(err)) return { kind: "rejected", provider: { kind: "auth" }, retryable: true };
+  if (status === 402) return { kind: "payment", retryable: true };
+  if (status === 404 || status === 403) return { kind: "unavailable", retryable: true };
+  if (status === 429) {
+    // OpenRouter's account-wide free quota: every free model there would fail the same way.
+    if (/free-models-per-day|per-day|daily/i.test(detail)) return { kind: "rate_limited", provider: { kind: "quota", scope: "free" }, retryable: true };
+    return { kind: "rate_limited", retryable: true };
+  }
+  if (status >= 400 && status < 500) return { kind: "rejected", retryable: true }; // e.g. context limit: another model may fit
+  return { kind: "overloaded", retryable: true };
+}
+
 let healthCache = null;
 
 const HEALTH_RANK = { ok: 0, unreachable: 1, auth_failed: 2 };
 
-async function checkProvider(provider) {
-  const model = MODELS.find((m) => m.provider === provider.id);
+async function checkProvider(provider, models) {
+  const model = models.find((m) => m.provider === provider.id);
   try {
-    const result = await provider.check(model.id, AbortSignal.timeout(10_000));
+    const result = await provider.check(model?.id, AbortSignal.timeout(10_000));
+    health.recordProviderSuccess(provider.id);
     return { status: "ok", message: `Connected to ${provider.label}.`, warnings: result?.warnings ?? [] };
   } catch (err) {
-    if (err instanceof UpstreamError && isAuthError(err)) return { status: "auth_failed", message: `${provider.vendor} rejected ${provider.keyEnv}.` };
+    if (err instanceof UpstreamError && isAuthError(err)) {
+      health.recordProviderFailure(provider.id, "auth"); // Auto skips it right away
+      return { status: "auth_failed", message: `${provider.vendor} rejected ${provider.keyEnv}.` };
+    }
     if (err instanceof UpstreamError && err.status) return { status: "unreachable", message: `${provider.label} responded with ${err.status}.` };
     return { status: "unreachable", message: `Could not reach ${provider.label}.` };
   }
 }
 
-async function health(res, fresh) {
+async function healthRoute(res, fresh) {
   const configured = Object.values(PROVIDERS).filter((p) => p.configured());
   if (!configured.length) {
     const keys = Object.values(PROVIDERS).map((p) => p.keyEnv).join(" or ");
@@ -166,11 +209,16 @@ async function health(res, fresh) {
   const age = healthCache ? Date.now() - healthCache.at : Infinity;
   if (age < (fresh ? HEALTH_FRESH_MIN_MS : HEALTH_TTL_MS)) return sendJson(res, 200, healthCache.body);
 
-  const results = await Promise.all(configured.map(async (p) => [p, await checkProvider(p)]));
+  const models = await availableModels();
+  const results = await Promise.all(configured.map(async (p) => [p, await checkProvider(p, models)]));
+  // The app works while any provider does (Auto routes around the others), so one failing provider
+  // is a warning, not an outage; only when every provider fails is the worst status reported.
+  const working = results.filter(([, r]) => r.status === "ok");
+  const failing = results.filter(([, r]) => r.status !== "ok");
   const worst = results.reduce((a, b) => (HEALTH_RANK[b[1].status] > HEALTH_RANK[a[1].status] ? b : a));
-  const status = worst[1].status;
-  const warnings = results.flatMap(([, r]) => r.warnings ?? []);
-  const message = [status === "ok" ? `Connected to ${configured.map((p) => p.label).join(" and ")}.` : results.map(([, r]) => r.message).join(" "), ...warnings].join(" ");
+  const status = working.length ? "ok" : worst[1].status;
+  const warnings = [...failing.map(([, r]) => r.message), ...results.flatMap(([, r]) => r.warnings ?? [])];
+  const message = [working.length ? `Connected to ${working.map(([p]) => p.label).join(" and ")}.` : "", ...warnings].filter(Boolean).join(" ");
   // Which deployment answered (non-secret; helps verify rollouts).
   const deployment = process.env.VERCEL_DEPLOYMENT_ID?.slice(-8) ?? process.env.K_REVISION ?? "local";
   const body = { status, message, providers: Object.fromEntries(results.map(([p, r]) => [p.id, r.status])), deployment };
@@ -178,19 +226,24 @@ async function health(res, fresh) {
   sendJson(res, 200, body);
 }
 
-function models(res) {
-  const list = availableModels();
+async function modelsRoute(res) {
+  const list = await availableModels();
+  // UI order: provider, then strongest benchmark first (unknown last).
+  const sorted = [...list].sort((a, b) => a.provider.localeCompare(b.provider) || (b.quality?.intelligence ?? -1) - (a.quality?.intelligence ?? -1));
   sendJson(res, 200, {
     defaultModel: defaultModelId(list),
-    models: list.map((m) => ({
+    models: sorted.map((m) => ({
       id: m.id,
       label: m.label,
       vendor: m.vendor,
       provider: PROVIDERS[m.provider].label,
       description: m.description,
       reasoning: m.reasoning,
+      vision: m.vision,
+      free: m.free,
       contextWindow: m.contextWindow,
       maxOutput: modelOutputLimit(m),
+      status: health.status(m),
     })),
     limits: { outputCap: outputCap(), streamSeconds: Math.floor(streamLimitMs() / 1000), rateLimitScope: limitScope() },
   });
@@ -218,80 +271,182 @@ async function chat(req, res) {
   }
 }
 
+/** First non-keep-alive event of a reply, or null if it ended without any. */
+async function firstEvent(iterator, onAlive) {
+  for (;;) {
+    const { value, done } = await iterator.next();
+    if (done) return null;
+    if (value.type !== "alive") return value;
+    onAlive();
+  }
+}
+
 async function streamCompletion(req, res, release) {
   const body = await readJson(req);
-  const model = findModel(body.model, availableModels());
-  if (!model) throw new HttpError(400, "Unknown model. Pick one from the model menu.", "invalid_model");
-  const provider = PROVIDERS[model.provider];
-  if (!provider.configured()) throw new HttpError(503, `The server has no ${provider.keyEnv} configured.`, "missing_key");
-
   const messages = validateMessages(body.messages);
   const system = typeof body.system === "string" ? body.system.trim().slice(0, MAX_SYSTEM_CHARS) : "";
   const promptChars = system.length + messages.reduce((n, m) => n + m.content.length, 0);
+  const models = await availableModels();
+  const auto = !body.model || body.model === AUTO;
+  const manualFallback = !auto && body.allowFallback === true;
 
-  const maxTokens = planMaxTokens(model, body.maxTokens, promptChars);
-  if (maxTokens < 256) throw new HttpError(413, "This conversation fills the model's context window. Start a new chat or pick a model with a larger context.", "too_long");
-
-  const limitMs = streamLimitMs();
-  const upstream = new AbortController();
-  let abortCause = null; // "client" | "headers_timeout" | "idle_timeout" | "max_duration"
-  let finished = false;
-  const abort = (cause) => {
-    if (!abortCause) abortCause = cause;
-    upstream.abort();
-  };
-  res.on("close", () => {
-    if (!finished) abort("client");
-  });
-  const maxTimer = setTimeout(() => abort("max_duration"), limitMs);
-  const queueMs = headersTimeoutMs();
-  let timer = setTimeout(() => abort("headers_timeout"), queueMs);
-  const stopTimers = () => {
-    clearTimeout(timer);
-    clearTimeout(maxTimer);
-  };
-
-  let reply;
-  try {
-    reply = await provider.open({
-      model,
-      messages,
-      system,
-      temperature: clamp(body.temperature, 0, 2, 0.6),
-      topP: clamp(body.topP, 0.01, 1, 0.95),
-      maxTokens,
-      thinking: body.thinking,
-      signal: upstream.signal,
-    });
-  } catch (err) {
-    stopTimers();
-    if (abortCause === "client") return;
-    if (abortCause === "headers_timeout") {
-      throw new HttpError(504, `${model.label} didn't start responding within ${Math.round(queueMs / 1000)}s. It's busy right now; try again or pick another model.`, "upstream_timeout");
-    }
-    throw mapUpstreamError(err, provider);
+  // ----- Decide which models to try, best first -----
+  const budget = {};
+  if (openrouterProvider.configured() && auto) budget.openrouter = await openrouterProvider.budget();
+  const routeReq = { messages, system, maxTokens: body.maxTokens, thinking: body.thinking, continuation: body.continuation === true, previousModel: typeof body.previousModel === "string" ? body.previousModel : undefined };
+  const decision = plan(routeReq, models, { budget });
+  let order;
+  if (auto) {
+    order = decision.candidates;
+  } else {
+    const chosen = models.find((m) => m.id === body.model);
+    if (!chosen) throw new HttpError(400, "That model is no longer available. Pick another model or switch to Auto.", "invalid_model");
+    const entry = decision.candidates.find((c) => c.model.id === chosen.id) ?? { model: chosen, score: null, parts: {}, bonus: [] };
+    order = [entry, ...(manualFallback ? decision.candidates.filter((c) => c.model.id !== chosen.id) : [])];
+  }
+  if (!order.length) {
+    const why = decision.excluded.map((e) => e.reason)[0];
+    throw new HttpError(413, `No available model can handle this request${why ? ` (${why})` : ""}. Start a new chat or shorten the conversation.`, "too_long");
   }
 
+  // ----- Timers shared by all attempts -----
+  const limitMs = streamLimitMs();
+  let current = null; // AbortController of the attempt in progress
+  let abortCause = null; // "client" | "max_duration" | "idle_timeout" (request-wide)
+  let finished = false;
+  const abortAll = (cause) => {
+    if (!abortCause) abortCause = cause;
+    current?.abort();
+  };
+  res.on("close", () => {
+    if (!finished) abortAll("client");
+  });
+  const maxTimer = setTimeout(() => abortAll("max_duration"), limitMs);
+  const deadline = Date.now() + headersTimeoutMs();
+
+  // ----- Try candidates until one starts streaming -----
+  const attempts = [];
+  const maxAttempts = auto || manualFallback ? MAX_ATTEMPTS() : 1;
+  const excludedProviders = new Set(); // provider-wide failures (bad key, unreachable)
+  const excludedFree = new Set(); // providers whose shared free quota ran out
+  let selected = null;
+  let lastErr = null;
+  for (const entry of order) {
+    if (attempts.length >= maxAttempts || abortCause) break;
+    const model = entry.model;
+    const provider = PROVIDERS[model.provider];
+    if (excludedProviders.has(model.provider) || (model.free && excludedFree.has(model.provider))) continue;
+    const remaining = deadline - Date.now();
+    if (remaining <= 1000) break;
+    // Back off before retrying the same provider after a provider-side failure.
+    const prev = attempts.at(-1);
+    if (prev && prev.provider === model.provider && prev.kind === "overloaded") await new Promise((r) => setTimeout(r, Math.min(2000, 300 * 2 ** (attempts.length - 1))));
+
+    const maxTokens = planMaxTokens(model, body.maxTokens, promptChars);
+    if (maxTokens < 256) {
+      attempts.push({ model: model.id, provider: model.provider, ok: false, error: "context too small", kind: "rejected", ms: 0 });
+      continue;
+    }
+    const ctrl = new AbortController();
+    current = ctrl;
+    const started = Date.now();
+    let timedOut = false;
+    let timer;
+    const arm = (ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        ctrl.abort();
+      }, ms);
+    };
+    arm(auto || manualFallback ? Math.min(attemptTimeoutMs(), remaining) : remaining);
+    try {
+      const reply = await provider.open({
+        model,
+        messages,
+        system,
+        temperature: clamp(body.temperature, 0, 2, 0.6),
+        topP: clamp(body.topP, 0.01, 1, 0.95),
+        maxTokens,
+        effort: effortFor(model, decision.task.tier, body.thinking),
+        signal: ctrl.signal,
+      });
+      const iterator = reply.events[Symbol.asyncIterator]();
+      // Nothing has been sent to the browser yet, so a failure up to the first event can still fall back.
+      const first = await firstEvent(iterator, () => arm(IDLE_TIMEOUT_MS));
+      clearTimeout(timer);
+      health.recordSuccess(model.id, { ttftMs: Date.now() - started });
+      attempts.push({ model: model.id, provider: model.provider, ok: true, ms: Date.now() - started });
+      selected = { entry, provider, reply, iterator, first, ctrl };
+      break;
+    } catch (err) {
+      clearTimeout(timer);
+      if (abortCause) break;
+      const error = timedOut ? Object.assign(new Error("attempt timeout"), { attemptTimeout: true }) : err;
+      const f = failureKind(error);
+      health.recordFailure(model.id, f.kind);
+      if (f.provider) {
+        health.recordProviderFailure(model.provider, f.provider.kind, { scope: f.provider.scope });
+        (f.provider.scope === "free" ? excludedFree : excludedProviders).add(model.provider);
+      }
+      attempts.push({ model: model.id, provider: model.provider, ok: false, error: mapUpstreamError(error, provider).code, kind: f.kind, ms: Date.now() - started });
+      lastErr = { error, provider };
+      if (!f.retryable) break;
+    }
+  }
+
+  if (!selected) {
+    clearTimeout(maxTimer);
+    if (abortCause === "client") return;
+    if (abortCause === "max_duration") throw new HttpError(504, "No model started responding before the time limit. Try again.", "upstream_timeout");
+    const mapped = lastErr ? mapUpstreamError(lastErr.error, lastErr.provider) : new HttpError(503, "No model is available right now. Try again shortly.", "upstream_busy");
+    if (attempts.length > 1) {
+      const names = attempts.map((a) => models.find((m) => m.id === a.model)?.label ?? a.model).join(", ");
+      mapped.message = `No available model could answer right now (tried ${names}). ${mapped.message}`;
+    }
+    throw mapped;
+  }
+
+  // ----- Stream the selected reply -----
+  const { entry, provider, iterator, first, ctrl } = selected;
+  current = ctrl;
+  const fallbackFrom = attempts.filter((a) => !a.ok).map((a) => models.find((m) => m.id === a.model)?.label ?? a.model);
+  const route = {
+    mode: auto ? AUTO : "manual",
+    provider: provider.label,
+    model: entry.model.label,
+    task: decision.task.type,
+    reason: reasonFor(decision, entry, { fallbackFrom, manual: !auto }),
+    fallbackFrom,
+  };
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-  writeEvent(res, { type: "start", model: model.id, maxTokens: reply.maxTokens, limitSeconds: Math.floor(limitMs / 1000) });
+  const start = { type: "start", model: entry.model.id, maxTokens: selected.reply.maxTokens, limitSeconds: Math.floor(limitMs / 1000), route };
+  if (body.debug === true) start.debug = debugInfo(decision, entry, attempts, order, auto);
+  writeEvent(res, start);
 
+  let idle;
   const resetIdle = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => abort("idle_timeout"), IDLE_TIMEOUT_MS);
+    clearTimeout(idle);
+    idle = setTimeout(() => abortAll("idle_timeout"), IDLE_TIMEOUT_MS);
   };
   resetIdle();
-
   let finishReason = null;
+  const handle = (event) => {
+    if (event.type === "finish") finishReason = event.reason;
+    else if (event.type !== "alive") writeEvent(res, event);
+  };
   try {
-    for await (const event of reply.events) {
+    if (first) handle(first);
+    for (;;) {
+      const { value, done } = await iterator.next();
+      if (done) break;
       resetIdle();
-      if (event.type === "finish") finishReason = event.reason;
-      else if (event.type !== "alive") writeEvent(res, event);
+      handle(value);
     }
     writeEvent(res, { type: "done", finishReason });
   } catch (err) {
@@ -300,25 +455,38 @@ async function streamCompletion(req, res, release) {
       let code = abortCause;
       if (abortCause === "idle_timeout") message = "The model stopped responding partway through. Try regenerating.";
       else if (abortCause === "max_duration") message = `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`;
-      else if (abortCause) message = `The connection to ${provider.label} was interrupted.`;
-      else if (err instanceof UpstreamError) ({ message, code } = mapUpstreamError(err, provider));
       else {
-        message = midStreamMessage(provider);
-        code = "upstream_error";
+        ({ message, code } = err instanceof UpstreamError ? mapUpstreamError(err, provider) : { message: midStreamMessage(provider), code: "upstream_error" });
+        health.recordFailure(entry.model.id, failureKind(err).kind);
       }
       writeEvent(res, { type: "error", message, code });
     }
   } finally {
-    stopTimers();
+    clearTimeout(idle);
+    clearTimeout(maxTimer);
     finished = true;
     await release(); // free the slot before ending: the platform may freeze the request after
     res.end();
   }
 }
 
+/** Routing details for the developer view: decisions and outcomes only, never keys or message text. */
+function debugInfo(decision, entry, attempts, order, auto) {
+  return {
+    mode: auto ? AUTO : "manual",
+    task: { type: decision.task.type, tier: decision.task.tier, signals: decision.task.signals },
+    requirements: decision.need,
+    candidates: decision.candidates.slice(0, 8).map((c) => ({ model: c.model.id, provider: c.model.provider, score: c.score, ...c.parts, bonus: c.bonus })),
+    excluded: decision.excluded,
+    selected: { model: entry.model.id, provider: entry.model.provider },
+    attempts,
+    fallbacksAvailable: order.filter((c) => !attempts.some((a) => a.model === c.model.id)).slice(0, 4).map((c) => c.model.id),
+  };
+}
+
 const ROUTES = {
-  "GET /api/health": (req, res, url) => health(res, url.searchParams.has("fresh")),
-  "GET /api/models": (req, res) => models(res),
+  "GET /api/health": (req, res, url) => healthRoute(res, url.searchParams.has("fresh")),
+  "GET /api/models": (req, res) => modelsRoute(res),
   "POST /api/chat": (req, res) => chat(req, res),
 };
 

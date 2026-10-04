@@ -6,7 +6,7 @@
 import { errorDetail, UpstreamError } from "./upstream.mjs";
 
 // Every OpenRouter key the server knows, in fallback order. A model may name its own first choice
-// (`keyEnv` in server/models.mjs, e.g. the DeepSeek models); the others are tried when that key fails
+// (`keyEnv` in server/registry.mjs OVERRIDES, e.g. the DeepSeek models); the others are tried when that key fails
 // for a key-specific reason.
 const KEY_ENVS = [
   { env: "OPENROUTER_API_KEY", name: "main" },
@@ -53,6 +53,8 @@ function keyOrder(keys) {
   return [...keys.filter((k) => !benched(k)), ...keys.filter(benched)];
 }
 
+let budgetCache = null;
+
 const headers = (key) => ({
   Authorization: `Bearer ${key}`,
   "Content-Type": "application/json",
@@ -88,7 +90,27 @@ export const openrouterProvider = {
     return { warnings };
   },
 
-  async open({ model, messages, system, temperature, topP, maxTokens, thinking, signal }) {
+  /**
+   * Fraction of the account's free-model daily requests still available (GET /key, cached 60 s;
+   * spends no quota). 1 when unknown. The router prefers other providers as this runs low.
+   */
+  async budget() {
+    if (budgetCache && Date.now() - budgetCache.at < 60_000) return budgetCache.value;
+    const { keys, base } = config();
+    let value = 1;
+    try {
+      const r = await fetch(`${base}/key`, { headers: headers(keys[0].key), signal: AbortSignal.timeout(3_000) });
+      const q = r.ok ? (await r.json()).data?.free_model_daily_requests : null;
+      if (q?.limit > 0) value = Math.max(0, q.remaining) / q.limit;
+    } catch {
+      // unknown: don't penalize
+    }
+    budgetCache = { at: Date.now(), value };
+    return value;
+  },
+
+  /** effort: null (model default) | "off" (`reasoning.enabled: false`) | a level from model.efforts. */
+  async open({ model, messages, system, temperature, topP, maxTokens, effort, signal }) {
     const { keys: all, base } = config();
     const keys = keysFor(model, all);
     const payload = {
@@ -99,7 +121,8 @@ export const openrouterProvider = {
       max_tokens: maxTokens,
       stream: true,
     };
-    if (model.reasoning === "toggle" && thinking === false) payload.reasoning = { enabled: false };
+    if (effort === "off" && model.reasoning === "toggle") payload.reasoning = { enabled: false };
+    else if (effort && effort !== "off") payload.reasoning = { effort };
 
     const order = keyOrder(keys);
     for (const [i, key] of order.entries()) {
@@ -109,6 +132,13 @@ export const openrouterProvider = {
         return { maxTokens, events: events(response.body, signal) };
       }
       const err = await fail(response);
+      // A model that rejects the reasoning setting gets one retry without it (same key).
+      if (err.status === 400 && payload.reasoning && /reason|effort/i.test(err.detail)) {
+        delete payload.reasoning;
+        const again = await fetch(`${base}/chat/completions`, { method: "POST", headers: headers(key), body: JSON.stringify(payload), signal });
+        if (again.ok) return { maxTokens, events: events(again.body, signal) };
+        throw await fail(again);
+      }
       if (!keySpecific(err) || i === order.length - 1) throw err;
       benchedUntil.set(key, Date.now() + KEY_BENCH_MS); // try the next key
     }
