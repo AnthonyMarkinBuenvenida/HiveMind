@@ -1,6 +1,6 @@
 // Output-token limits. The app targets up to 50,000 output tokens (MAX_OUTPUT_TOKENS), but never
 // more than the model/API accepts, and never more than fits in the model's context window
-// after the prompt. If NVIDIA still rejects the value, parseLimitFromError() finds the real
+// after the prompt. If Gemini still rejects the value, parseLimitFromError() finds the real
 // ceiling in its message so the request can be retried once instead of failing.
 
 export const DEFAULT_OUTPUT_CAP = 50_000;
@@ -31,15 +31,14 @@ export function planMaxTokens(model, requested, promptChars, cap = outputCap()) 
 }
 
 /**
- * Reads a token ceiling out of an NVIDIA/vLLM validation error. Returns a smaller max_tokens
- * that should be accepted, or null if the error isn't about max_tokens.
+ * Reads a token ceiling out of a Gemini validation error. Returns a smaller maxOutputTokens
+ * that should be accepted, or null if the error isn't about the output limit.
  */
 export function parseLimitFromError(text, sent) {
-  let m = /maximum context length is (\d+) tokens.*?\((\d+) in the messages/is.exec(text);
-  if (m) return fit(Number(m[1]) - Number(m[2]) - 16, sent);
-  m = /max_model_len=(?:max_total_tokens=)?(\d+)/i.exec(text);
-  if (m) return fit(Number(m[1]) - 1024, sent); // prompt size unknown here: leave headroom
-  m = /max(?:imum)?[ _]tokens must not exceed (\d+)/i.exec(text);
+  // "…maxOutputTokens value of 100000 but the supported range is from 1 (inclusive) to 65537 (exclusive)…"
+  let m = /maxOutputTokens.*?supported range is from \d+ \(inclusive\) to (\d+) \(exclusive\)/is.exec(text);
+  if (m) return fit(Number(m[1]) - 1, sent);
+  m = /maxOutputTokens.*?(?:must not exceed|must be (?:less than or equal to|at most)|maximum(?: allowed)?(?: value)? (?:is|of)) (\d+)/is.exec(text);
   if (m) return fit(Number(m[1]), sent);
   return null;
 }

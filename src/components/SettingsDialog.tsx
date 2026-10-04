@@ -165,7 +165,7 @@ function DataTab() {
           {health === "checking" ? "Checking…" : "Re-check"}
         </button>
       </Row>
-      <Row label="Provider" description={`NVIDIA NIM · ${models.length} verified models. The API key stays on the server and is never sent to this browser.`} />
+      <Row label="Provider" description={`Google Gemini API · ${models.length} models. The API key stays on the server and is never sent to this browser.`} />
       <Row label="Export conversations" description={`Download all ${conversations.length} conversations as JSON.`}>
         <button
           type="button"

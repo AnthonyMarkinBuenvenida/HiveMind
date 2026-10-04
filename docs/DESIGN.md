@@ -55,7 +55,7 @@ Message column max width is `--content-w` (768, or 960 when "Wide"). Use `100dvh
 - **Disabled controls** explain why (tooltip, `disabledReason`, or adjacent text). If a capability doesn't exist, show it as unavailable — don't fake it.
 - **Empty / loading / error**: every data view has all three. Errors are inline next to where the action happened, with a retry when one makes sense.
 - **Dialog initial focus**: mark the element with `data-autofocus` (React's `autoFocus` runs before `showModal()`). Destructive confirmations focus Cancel.
-- **Long waits are explained**: while waiting for the first token the message shows elapsed seconds and, after 12 s, that NVIDIA is queuing the request. A response stopped by the host time limit shows "Paused at the time limit" (accent, not error styling) with Continue.
+- **Long waits are explained**: while waiting for the first token the message shows elapsed seconds and, after 12 s, a note that the model is busy. A response stopped by the host time limit shows "Paused at the time limit" (accent, not error styling) with Continue.
 - **Token presets** only show values the active model supports (`maxOutput` from `/api/models`); the slider steps by 1,000 so 50,000 is reachable exactly.
 
 ## Rendering model output

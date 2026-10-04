@@ -1,4 +1,4 @@
-// Vercel function for /api/models — all logic lives in server/api.mjs (shared with local dev).
+// Vercel function for /api/models — all logic lives in server/api.mjs (shared with server.ts).
 import { handleApi } from "../server/api.mjs";
 
 export default async function handler(req, res) {

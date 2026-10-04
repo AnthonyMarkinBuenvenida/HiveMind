@@ -40,7 +40,7 @@ function loadMath(): Promise<MathPlugins> {
 }
 
 /**
- * Warm both chunks when a response starts: NIM takes >= 1s to send the first token, so math and
+ * Warm both chunks when a response starts: the model takes >= 1s to send the first token, so math and
  * code render formatted from the first frame instead of flashing raw delimiters once per page load.
  */
 export function preloadRenderers() {

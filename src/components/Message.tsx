@@ -72,7 +72,7 @@ function Waiting({ label, since }: { label: string; since: number }) {
       </span>
       <span>
         Waiting for {label}… {s >= 5 && <span className="typing-elapsed">{s}s</span>}
-        {s >= 12 && <span className="typing-note"> · NVIDIA is queuing this request; busy models can take a minute or two to start.</span>}
+        {s >= 12 && <span className="typing-note"> · Gemini is busy; thinking models can take a little while to start.</span>}
       </span>
     </div>
   );

@@ -1,5 +1,6 @@
 // Server tests for the public demo: access, abuse limits, request limits, token planning and
-// Vercel config. No NVIDIA calls (the upstream URL is unreachable on purpose).
+// Vercel config. No Gemini calls (the upstream URL is unreachable on purpose; streaming against a
+// fake Gemini server is tested in gemini.test.mjs).
 // Run: npm test   (the Postgres store test runs only when DATABASE_URL/POSTGRES_URL is set)
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,8 +12,8 @@ import { MODELS } from "./models.mjs";
 import { SECURITY_HEADERS } from "./securityHeaders.mjs";
 
 Object.assign(process.env, {
-  NVIDIA_API_KEY: "test-key-not-real",
-  NIM_BASE_URL: "http://127.0.0.1:1", // unreachable: chat must fail safely
+  GEMINI_API_KEY: "test-key-not-real",
+  GEMINI_BASE_URL: "http://127.0.0.1:1", // unreachable: chat must fail safely
   RATE_LIMIT_CHAT_PER_MIN: "3",
   LOG_REQUESTS: "false",
 });
@@ -77,31 +78,29 @@ describe("postgres store", { skip: !dbUrl && "set POSTGRES_URL_FOR_TESTS to run 
 
 // ---------- Token planning ----------
 describe("output tokens", () => {
-  const deepseek = MODELS.find((m) => m.id.includes("deepseek"));
-  const llama = MODELS.find((m) => m.id.includes("llama"));
+  const flash = MODELS[0];
+  const small = { maxOutput: 65_536, contextWindow: 131_072 };
 
   test("50K is offered when the model supports it", () => {
-    assert.equal(modelOutputLimit(deepseek), 50_000);
-    assert.equal(modelOutputLimit(llama), 50_000); // 131K context > 50K
+    for (const m of MODELS) assert.equal(modelOutputLimit(m), 50_000, m.id); // Gemini allows 65,536
   });
   test("falls back to the model maximum when it is below the cap", () => {
     assert.equal(modelOutputLimit({ maxOutput: 8192 }), 8192);
     assert.equal(planMaxTokens({ maxOutput: 8192, contextWindow: null }, 50_000, 100), 8192);
   });
   test("request is clamped to the cap and to the context left after the prompt", () => {
-    assert.equal(planMaxTokens(deepseek, 999_999, 100), 50_000);
-    assert.equal(planMaxTokens(deepseek, 10, 100), 256);
+    assert.equal(planMaxTokens(flash, 999_999, 100), 50_000);
+    assert.equal(planMaxTokens(flash, 10, 100), 256);
     // 300k chars ≈ 100k tokens of prompt: only ~30.8k remain in a 131,072 context
-    const n = planMaxTokens(llama, 50_000, 300_000);
+    const n = planMaxTokens(small, 50_000, 300_000);
     assert.ok(n < 50_000 && n > 25_000, `got ${n}`);
   });
-  test("the real ceiling is read from NVIDIA validation errors", () => {
+  test("the real ceiling is read from Gemini validation errors", () => {
     assert.equal(
-      parseLimitFromError("This model's maximum context length is 131072 tokens. However, you requested 150039 tokens (100039 in the messages, 50000 in the completion).", 50_000),
-      131_072 - 100_039 - 16,
+      parseLimitFromError("Unable to submit request because it has a maxOutputTokens value of 50000 but the supported range is from 1 (inclusive) to 32769 (exclusive). Update the value and try again.", 50_000),
+      32_768,
     );
-    assert.equal(parseLimitFromError("max_tokens=200000cannot be greater than max_model_len=max_total_tokens=131072.", 200_000), 130_048);
-    assert.equal(parseLimitFromError("Validation: Max tokens must not exceed 1048576, got 2000000", 2_000_000), 1_048_576);
+    assert.equal(parseLimitFromError("maxOutputTokens must not exceed 8192", 50_000), 8192);
     assert.equal(parseLimitFromError("some unrelated 400", 50_000), null);
   });
 });
@@ -120,7 +119,7 @@ describe("API router (public demo)", () => {
 
   const post = (path, body, headers = {}) =>
     fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
-  const chatBody = { model: "deepseek-ai/deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }] };
+  const chatBody = { model: MODELS[0].id, messages: [{ role: "user", content: "hi" }] };
 
   test("routes are public: no sign-in, no cookies", async () => {
     const r = await fetch(base + "/api/models");

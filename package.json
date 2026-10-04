@@ -4,15 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tsx server.ts",
     "build": "tsc -p tsconfig.json && vite build",
-    "preview": "vite preview",
+    "start": "tsx server.ts --prod",
+    "preview": "npm run build && tsx server.ts --prod",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test \"server/*.test.mjs\" \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@google/genai": "^2.27.0",
     "@neondatabase/serverless": "^1.2.0",
     "@vercel/functions": "^3.9.9",
+    "express": "^5.2.1",
     "hast-util-to-jsx-runtime": "^2.3.6",
     "highlight.js": "^11.11.2",
     "katex": "^0.16.47",
@@ -22,9 +25,11 @@
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/hast": "^3.0.5",
     "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
@@ -32,5 +37,8 @@
     "@vitejs/plugin-react": "^6.1.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.2"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

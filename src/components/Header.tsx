@@ -91,7 +91,7 @@ function ModelPicker() {
             );
           })}
         </div>
-        <p className="model-menu-foot">Served by NVIDIA NIM. Applies to your next message.</p>
+        <p className="model-menu-foot">Served by the Gemini API. Applies to your next message.</p>
       </Popover>
     </>
   );

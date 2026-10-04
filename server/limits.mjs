@@ -1,4 +1,4 @@
-// Rate limiting for the public demo. Anyone with the URL can use the NVIDIA-backed API, so
+// Rate limiting for the public demo. Anyone with the URL can use the Gemini-backed API, so
 // these limits are the abuse protection.
 //
 // Storage:

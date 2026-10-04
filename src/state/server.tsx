@@ -55,7 +55,7 @@ export function ServerProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // User-initiated and error-triggered checks always ask NIM again.
+  // User-initiated and error-triggered checks always ask the Gemini API again.
   const recheckHealth = useCallback(() => checkHealth(true), [checkHealth]);
 
   useEffect(() => {

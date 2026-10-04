@@ -1,5 +1,5 @@
-// Server-side API layer — the only code that sees NVIDIA_API_KEY.
-// Runs as Vite middleware (dev and `vite preview`, see vite.config.ts) and as Vercel
+// Server-side API layer — the only code that sees GEMINI_API_KEY.
+// Runs inside server.ts (Express: local dev, Google AI Studio, Cloud Run) and as Vercel
 // functions (api/*.mjs). HiveMind is a public demo: there is no sign-in; abuse protection is
 // rate limiting (server/limits.mjs), request limits and validation.
 //
@@ -8,15 +8,15 @@
 //   GET  /api/models  -> { models, defaultModel, limits }
 //   POST /api/chat    -> text/event-stream of normalized events (see docs/API.md)
 
+import { ApiError, GoogleGenAI } from "@google/genai";
 import { waitUntil } from "@vercel/functions";
 import { clientIp, isSameOrigin, logId } from "./http.mjs";
 import { acquireChat, LimitError, limitScope } from "./limits.mjs";
 import { MODELS, findModel, defaultModelId } from "./models.mjs";
 import { modelOutputLimit, outputCap, parseLimitFromError, planMaxTokens } from "./tokens.mjs";
 
-// How long NIM may queue a request before sending response headers. DeepSeek was measured
-// queuing 24s+ (and >45s from Vercel), so the default is generous; it is always capped below
-// the stream limit so a queued request can still produce an answer.
+// How long Gemini may take to start streaming (send response headers). It is always capped
+// below the stream limit so a slow start can still produce an answer.
 function headersTimeoutMs() {
   const s = Number(process.env.UPSTREAM_QUEUE_TIMEOUT_SECONDS);
   const wanted = Number.isFinite(s) && s > 0 ? s * 1000 : 120_000;
@@ -24,21 +24,25 @@ function headersTimeoutMs() {
 }
 const IDLE_TIMEOUT_MS = 60_000; // max silence between streamed chunks
 const HEALTH_TTL_MS = 60_000;
-const HEALTH_FRESH_MIN_MS = 5_000; // "Re-check" can't be used to hammer NVIDIA's /models
+const HEALTH_FRESH_MIN_MS = 5_000; // "Re-check" can't be used to hammer Gemini's models endpoint
 const MAX_BODY_BYTES = 2_000_000;
 const MAX_MESSAGES = 200;
 const MAX_TOTAL_CHARS = 600_000;
 const MAX_SYSTEM_CHARS = 8_000;
 
+// Gemini finish reasons that mean the response was withheld, not completed.
+const BLOCKED_REASONS = new Set(["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"]);
+
 /**
- * Longest a single response may stream. On Vercel the function is killed at its maxDuration
- * (FUNCTION_MAX_DURATION, seconds; must match vercel.json), so the stream ends cleanly a little
- * before that with a "time limit" event the UI can offer to continue from.
+ * Longest a single response may stream. On Vercel and Cloud Run the platform ends a request at
+ * its timeout (FUNCTION_MAX_DURATION, seconds; 300 = vercel.json maxDuration and Cloud Run's
+ * default), so the stream ends cleanly a little before that with a "time limit" event the UI
+ * can offer to continue from.
  */
 export function streamLimitMs() {
   const explicit = Number(process.env.STREAM_LIMIT_SECONDS);
   if (Number.isFinite(explicit) && explicit > 0) return explicit * 1000;
-  if (process.env.VERCEL === "1") return (Number(process.env.FUNCTION_MAX_DURATION) || 300) * 1000 - 15_000;
+  if (process.env.VERCEL === "1" || process.env.K_SERVICE) return (Number(process.env.FUNCTION_MAX_DURATION) || 300) * 1000 - 15_000;
   return 10 * 60_000;
 }
 
@@ -53,9 +57,19 @@ class HttpError extends Error {
 
 function config() {
   return {
-    key: process.env.NVIDIA_API_KEY?.trim() || "",
-    base: (process.env.NIM_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/+$/, ""),
+    key: (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim(),
+    // Optional override (tests point it at an unreachable address).
+    baseUrl: process.env.GEMINI_BASE_URL?.trim() || undefined,
   };
+}
+
+let client = null;
+
+function gemini({ key, baseUrl }) {
+  if (client?.key !== key || client?.baseUrl !== baseUrl) {
+    client = { key, baseUrl, ai: new GoogleGenAI({ apiKey: key, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) }) };
+  }
+  return client.ai;
 }
 
 function sendJson(res, status, body, headers = {}) {
@@ -113,44 +127,59 @@ function validateMessages(input) {
   return messages;
 }
 
-function parseUpstreamDetail(text) {
-  try {
-    const j = JSON.parse(text);
-    return String(j.detail || j.message || j.error?.message || j.title || "").slice(0, 300);
-  } catch {
-    return text.trim().slice(0, 300);
+/** Gemini's own message out of an SDK error (its message is often the raw JSON error body). */
+function upstreamDetail(err) {
+  const text = String(err?.message ?? "");
+  const json = text.indexOf("{");
+  if (json >= 0) {
+    try {
+      const j = JSON.parse(text.slice(json));
+      return String(j.error?.message || j.message || "").slice(0, 300);
+    } catch {
+      // not JSON: fall through
+    }
   }
+  return text.trim().slice(0, 300);
 }
 
-function mapUpstreamError(status, text) {
-  const detail = parseUpstreamDetail(text);
-  if (status === 401 || status === 403) return new HttpError(502, "NVIDIA rejected the server's API key. The site owner needs to check NVIDIA_API_KEY.", "auth_failed");
-  if (status === 404) return new HttpError(502, "This model isn't available on NVIDIA's API right now. Pick another model.", "model_unavailable");
-  if (status === 429) return new HttpError(429, "NVIDIA's rate limit was reached. Wait a moment and try again.", "rate_limited");
+function isAuthError(status, detail) {
+  // Gemini answers an invalid key with 400 INVALID_ARGUMENT "API key not valid", not 401.
+  return status === 401 || status === 403 || (status === 400 && /api[ _]?key/i.test(detail));
+}
+
+function mapUpstreamError(err) {
+  const status = err instanceof ApiError ? err.status : 0;
+  const detail = upstreamDetail(err);
+  if (isAuthError(status, detail)) return new HttpError(502, "Google rejected the server's API key. The site owner needs to check GEMINI_API_KEY.", "auth_failed");
+  if (status === 404) return new HttpError(502, "This model isn't available on the Gemini API right now. Pick another model.", "model_unavailable");
+  if (status === 429) return new HttpError(429, "The Gemini API rate limit or quota was reached. Wait a moment and try again.", "rate_limited");
   if (status >= 400 && status < 500) return new HttpError(400, `The model rejected the request${detail ? `: ${detail}` : "."}`, "invalid_request");
-  return new HttpError(502, `NVIDIA's API returned an error (${status}). Try again shortly.`, "upstream_error");
+  if (status >= 500) return new HttpError(502, `The Gemini API returned an error (${status}). Try again shortly.`, "upstream_error");
+  return new HttpError(502, "Could not reach the Gemini API. Try again shortly.", "upstream_unreachable");
 }
 
 let healthCache = null;
 
 async function health(res, fresh) {
-  const { key, base } = config();
-  if (!key) return sendJson(res, 200, { status: "missing_key", message: "NVIDIA_API_KEY is not set on the server." });
+  const cfg = config();
+  if (!cfg.key) return sendJson(res, 200, { status: "missing_key", message: "GEMINI_API_KEY is not set on the server." });
   const age = healthCache ? Date.now() - healthCache.at : Infinity;
   if (age < (fresh ? HEALTH_FRESH_MIN_MS : HEALTH_TTL_MS)) return sendJson(res, 200, healthCache.body);
 
   let body;
   try {
-    const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
-    if (r.ok) body = { status: "ok", message: "Connected to NVIDIA NIM." };
-    else if (r.status === 401 || r.status === 403) body = { status: "auth_failed", message: "NVIDIA rejected the server's API key." };
-    else body = { status: "unreachable", message: `NVIDIA API responded with ${r.status}.` };
-  } catch {
-    body = { status: "unreachable", message: "Could not reach NVIDIA's API." };
+    await gemini(cfg).models.get({ model: defaultModelId(), config: { abortSignal: AbortSignal.timeout(10_000) } });
+    body = { status: "ok", message: "Connected to the Gemini API." };
+  } catch (err) {
+    const status = err instanceof ApiError ? err.status : 0;
+    if (isAuthError(status, upstreamDetail(err))) body = { status: "auth_failed", message: "Google rejected the server's API key." };
+    else if (status) body = { status: "unreachable", message: `The Gemini API responded with ${status}.` };
+    else body = { status: "unreachable", message: "Could not reach the Gemini API." };
   }
   healthCache = { at: Date.now(), body };
   // Which deployment answered (non-secret; helps verify rollouts).
-  sendJson(res, 200, { ...body, deployment: process.env.VERCEL_DEPLOYMENT_ID?.slice(-8) ?? "local" });
+  const deployment = process.env.VERCEL_DEPLOYMENT_ID?.slice(-8) ?? process.env.K_REVISION ?? "local";
+  sendJson(res, 200, { ...body, deployment });
 }
 
 function models(res) {
@@ -170,8 +199,8 @@ function models(res) {
 }
 
 async function chat(req, res) {
-  const { key, base } = config();
-  if (!key) throw new HttpError(503, "The server has no NVIDIA_API_KEY configured.", "missing_key");
+  const cfg = config();
+  if (!cfg.key) throw new HttpError(503, "The server has no GEMINI_API_KEY configured.", "missing_key");
 
   let release;
   try {
@@ -180,44 +209,52 @@ async function chat(req, res) {
     if (err instanceof LimitError) throw new HttpError(429, err.message, err.code, retryAfterHeader(err.retryAfterMs));
     throw err;
   }
-  // On a client disconnect (Stop, closed tab) try to free the slot immediately. Vercel may still
-  // cancel the function before this completes (observed); the slot's short lease covers that case.
+  // On a client disconnect (Stop, closed tab) try to free the slot immediately. The platform may
+  // still end the request before this completes (observed on Vercel); the slot's short lease covers that.
   res.on("close", () => {
     if (!res.writableFinished) waitUntil(release());
   });
   try {
-    await streamCompletion(req, res, key, base, release);
+    await streamCompletion(req, res, gemini(cfg), release);
   } finally {
     await release(); // idempotent; covers errors thrown before streaming started
   }
 }
 
-async function streamCompletion(req, res, key, base, release) {
+async function streamCompletion(req, res, ai, release) {
   const body = await readJson(req);
   const model = findModel(body.model);
   if (!model) throw new HttpError(400, "Unknown model. Pick one from the model menu.", "invalid_model");
 
   const messages = validateMessages(body.messages);
   const system = typeof body.system === "string" ? body.system.trim().slice(0, MAX_SYSTEM_CHARS) : "";
-  if (system) messages.unshift({ role: "system", content: system });
-  const promptChars = messages.reduce((n, m) => n + m.content.length, 0);
+  const promptChars = system.length + messages.reduce((n, m) => n + m.content.length, 0);
 
   const maxTokens = planMaxTokens(model, body.maxTokens, promptChars);
   if (maxTokens < 256) throw new HttpError(413, "This conversation fills the model's context window. Start a new chat or pick a model with a larger context.", "too_long");
 
-  const payload = {
-    model: model.id,
-    messages,
+  // Gemini roles are "user" and "model"; empty turns (e.g. a reply stopped before any text) are rejected.
+  const contents = messages
+    .filter((m) => m.content.trim())
+    .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+
+  const upstream = new AbortController();
+  const genConfig = {
     temperature: clamp(body.temperature, 0, 2, 0.6),
-    top_p: clamp(body.topP, 0.01, 1, 0.95),
-    max_tokens: maxTokens,
-    stream: true,
-    stream_options: { include_usage: true },
+    topP: clamp(body.topP, 0.01, 1, 0.95),
+    maxOutputTokens: maxTokens,
+    abortSignal: upstream.signal,
   };
-  if (model.reasoning === "toggle" && body.thinking === false) payload.chat_template_kwargs = model.thinkingKwargs;
+  if (system) genConfig.systemInstruction = system;
+  if (model.reasoning !== "none") {
+    genConfig.thinkingConfig = { includeThoughts: true };
+    if (model.reasoning === "toggle") {
+      const level = body.thinking === false ? model.thinkingOff : model.thinkingOn;
+      if (level) genConfig.thinkingConfig.thinkingLevel = level;
+    }
+  }
 
   const limitMs = streamLimitMs();
-  const upstream = new AbortController();
   let abortCause = null; // "client" | "headers_timeout" | "idle_timeout" | "max_duration"
   let finished = false;
   const abort = (cause) => {
@@ -235,40 +272,30 @@ async function streamCompletion(req, res, key, base, release) {
     clearTimeout(maxTimer);
   };
 
-  const request = () =>
-    fetch(`${base}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify(payload),
-      signal: upstream.signal,
-    });
+  const request = () => ai.models.generateContentStream({ model: model.id, contents, config: genConfig });
 
-  let response;
+  let stream;
   try {
-    response = await request();
-    // If NVIDIA rejects max_tokens anyway (e.g. a context limit we couldn't predict), retry once
-    // with the ceiling it reports instead of failing the user's request.
-    if (response.status === 400) {
-      const text = await response.text().catch(() => "");
-      const lower = parseLimitFromError(text, payload.max_tokens);
-      if (lower) {
-        payload.max_tokens = lower;
-        response = await request();
-      } else {
-        response = new Response(text, { status: 400 });
-      }
+    try {
+      stream = await request();
+    } catch (err) {
+      // A 400 we can recover from is retried once instead of failing the user's request:
+      // an output limit lower than expected, or a thinking level this model doesn't accept.
+      if (abortCause || !(err instanceof ApiError) || err.status !== 400) throw err;
+      const detail = upstreamDetail(err);
+      const lower = parseLimitFromError(detail, genConfig.maxOutputTokens);
+      if (lower) genConfig.maxOutputTokens = lower;
+      else if (genConfig.thinkingConfig?.thinkingLevel && /thinking/i.test(detail)) delete genConfig.thinkingConfig.thinkingLevel;
+      else throw err;
+      stream = await request();
     }
-  } catch {
+  } catch (err) {
     stopTimers();
     if (abortCause === "client") return;
     if (abortCause === "headers_timeout") {
-      throw new HttpError(504, `NVIDIA queued ${model.label} for over ${Math.round(queueMs / 1000)}s without starting. It's busy right now; try again or pick another model.`, "upstream_timeout");
+      throw new HttpError(504, `${model.label} didn't start responding within ${Math.round(queueMs / 1000)}s. Try again or pick another model.`, "upstream_timeout");
     }
-    throw new HttpError(502, "Could not reach NVIDIA's API. Try again shortly.", "upstream_unreachable");
-  }
-  if (!response.ok) {
-    stopTimers();
-    throw mapUpstreamError(response.status, await response.text().catch(() => ""));
+    throw mapUpstreamError(err);
   }
 
   res.writeHead(200, {
@@ -277,7 +304,7 @@ async function streamCompletion(req, res, key, base, release) {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-  writeEvent(res, { type: "start", model: model.id, maxTokens: payload.max_tokens, limitSeconds: Math.floor(limitMs / 1000) });
+  writeEvent(res, { type: "start", model: model.id, maxTokens: genConfig.maxOutputTokens, limitSeconds: Math.floor(limitMs / 1000) });
 
   const resetIdle = () => {
     clearTimeout(timer);
@@ -285,64 +312,50 @@ async function streamCompletion(req, res, key, base, release) {
   };
   resetIdle();
 
-  const decoder = new TextDecoder();
-  let buffer = "";
   let finishReason = null;
+  let usage = null;
   try {
-    for await (const chunk of response.body) {
+    for await (const chunk of stream) {
       resetIdle();
-      buffer += decoder.decode(chunk, { stream: true });
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, newline).replace(/\r$/, "");
-        buffer = buffer.slice(newline + 1);
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-
-        let json;
-        try {
-          json = JSON.parse(data);
-        } catch {
-          continue;
-        }
-        if (json.error) {
-          writeEvent(res, { type: "error", message: parseUpstreamDetail(JSON.stringify(json.error)) || "The model returned an error.", code: "upstream_error" });
-          continue;
-        }
-        const choice = json.choices?.[0];
-        const delta = choice?.delta ?? {};
-        const reasoning = delta.reasoning_content ?? delta.reasoning;
-        if (reasoning) writeEvent(res, { type: "reasoning", text: reasoning });
-        if (delta.content) writeEvent(res, { type: "content", text: delta.content });
-        if (choice?.finish_reason) finishReason = choice.finish_reason;
-        if (json.usage) {
-          writeEvent(res, {
-            type: "usage",
-            usage: {
-              prompt: json.usage.prompt_tokens ?? null,
-              completion: json.usage.completion_tokens ?? null,
-              reasoning: json.usage.completion_tokens_details?.reasoning_tokens ?? null,
-            },
-          });
-        }
+      if (chunk.promptFeedback?.blockReason) {
+        writeEvent(res, { type: "error", message: `Gemini blocked this prompt (${chunk.promptFeedback.blockReason.toLowerCase()}). Try rephrasing it.`, code: "blocked" });
+        continue;
       }
+      const candidate = chunk.candidates?.[0];
+      for (const part of candidate?.content?.parts ?? []) {
+        if (part.text) writeEvent(res, { type: part.thought ? "reasoning" : "content", text: part.text });
+      }
+      if (candidate?.finishReason) finishReason = candidate.finishReason;
+      if (chunk.usageMetadata) usage = chunk.usageMetadata; // cumulative: the last one is the total
     }
-    writeEvent(res, { type: "done", finishReason });
-  } catch {
+    if (usage) {
+      const thoughts = usage.thoughtsTokenCount ?? 0;
+      writeEvent(res, {
+        type: "usage",
+        // "completion" includes thinking tokens, as the UI expects.
+        usage: { prompt: usage.promptTokenCount ?? null, completion: (usage.candidatesTokenCount ?? 0) + thoughts, reasoning: thoughts || null },
+      });
+    }
+    if (BLOCKED_REASONS.has(finishReason)) {
+      writeEvent(res, { type: "error", message: `Gemini stopped this response (${finishReason.toLowerCase().replace(/_/g, " ")}). Try rephrasing your message.`, code: "blocked" });
+    }
+    writeEvent(res, { type: "done", finishReason: finishReason === "MAX_TOKENS" ? "length" : finishReason === "STOP" ? "stop" : finishReason?.toLowerCase() ?? null });
+  } catch (err) {
     if (abortCause !== "client") {
       const message =
         abortCause === "idle_timeout"
           ? "The model stopped responding partway through. Try regenerating."
           : abortCause === "max_duration"
             ? `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`
-            : "The connection to NVIDIA's API was interrupted.";
+            : abortCause
+              ? "The connection to the Gemini API was interrupted."
+              : mapUpstreamError(err).message;
       writeEvent(res, { type: "error", message, code: abortCause ?? "stream_interrupted" });
     }
   } finally {
     stopTimers();
     finished = true;
-    await release(); // free the slot before ending: the platform may freeze the function after
+    await release(); // free the slot before ending: the platform may freeze the request after
     res.end();
   }
 }
@@ -364,7 +377,7 @@ function logRequest(req, res, path, started) {
 
 /** Handles /api/* requests. Returns false if the URL is not an API route. */
 export async function handleApi(req, res) {
-  const url = new URL(req.url ?? "/", "http://localhost");
+  const url = new URL(req.originalUrl ?? req.url ?? "/", "http://localhost");
   if (!url.pathname.startsWith("/api/")) return false;
   const started = Date.now();
   res.on("close", () => logRequest(req, res, url.pathname, started));

@@ -1,10 +1,12 @@
-// Request helpers shared by the API handler (dev middleware, `vite preview`, Vercel functions).
+// Request helpers shared by the API handler (server.ts and Vercel functions).
 import { createHash, randomBytes } from "node:crypto";
 
 /**
- * Client IP. On Vercel, the platform sets x-real-ip / x-forwarded-for itself (client-supplied
- * values are overwritten), so they are trusted only when running there (VERCEL=1).
- * Elsewhere the socket address is used and forwarding headers are ignored (they're spoofable).
+ * Client IP. Forwarding headers are spoofable, so they are trusted only where the platform sets them:
+ * - Vercel (VERCEL=1) overwrites x-real-ip / x-forwarded-for itself.
+ * - Cloud Run (K_SERVICE, used by Google AI Studio deployments) appends the real client address as
+ *   the last x-forwarded-for entry; earlier entries come from the client.
+ * Elsewhere the socket address is used and forwarding headers are ignored.
  */
 export function clientIp(req) {
   if (process.env.VERCEL === "1") {
@@ -12,6 +14,10 @@ export function clientIp(req) {
     if (real) return real;
     const xff = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
     if (xff) return xff;
+  }
+  if (process.env.K_SERVICE) {
+    const last = String(req.headers["x-forwarded-for"] ?? "").split(",").pop().trim();
+    if (last) return last;
   }
   return req.socket?.remoteAddress ?? "unknown";
 }

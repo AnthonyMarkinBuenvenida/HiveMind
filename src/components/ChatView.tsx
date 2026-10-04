@@ -28,7 +28,7 @@ function EmptyState() {
         <p className="empty-sub">
           {activeModel ? (
             <>
-              You're chatting with <strong>{activeModel.label}</strong> on NVIDIA NIM.
+              You're chatting with <strong>{activeModel.label}</strong> on the Gemini API.
             </>
           ) : (
             "Loading available models…"

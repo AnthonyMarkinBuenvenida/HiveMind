@@ -1,68 +1,61 @@
-// Curated model registry. NVIDIA's /v1/models lists models that are not actually
-// usable on every account (some 404, some hang), so only verified models go here.
+// Curated Gemini model registry. Only free-tier models are listed so the demo works with the key
+// Google AI Studio injects (GEMINI_API_KEY). gemini-3.1-pro-preview is paid-only; add it here if
+// the key has billing enabled.
 //
 // reasoning:
-//   "toggle" — streams reasoning; can be switched off via `thinkingKwargs`
-//   "always" — streams reasoning; no verified way to disable it
+//   "toggle" — streams thought summaries; thinking on/off sends thinkingLevel `thinkingOn`/`thinkingOff`
+//   "always" — streams thought summaries; the model rejects the lowest level, so it can't be turned off
 //   "none"   — never streams reasoning
 //
-// maxOutput:     largest max_tokens NVIDIA accepts for the model (probed 2026-10-02).
-// contextWindow: total tokens (prompt + output) when the model enforces one; null when only the
-//                gateway's max_tokens cap applies. The app further caps output at 50,000
-//                (server/tokens.mjs). See docs/API.md for how each entry was verified.
+// maxOutput:     output token limit from the model page (ai.google.dev/gemini-api/docs/models, 2026-10).
+// contextWindow: input token limit. The app further caps output at 50,000 (server/tokens.mjs).
 
-/** @typedef {{ id: string, label: string, vendor: string, description: string, reasoning: "toggle" | "always" | "none", thinkingKwargs?: Record<string, unknown>, maxOutput: number, contextWindow: number | null }} ModelInfo */
+/** @typedef {{ id: string, label: string, vendor: string, description: string, reasoning: "toggle" | "always" | "none", thinkingOn?: string, thinkingOff?: string, maxOutput: number, contextWindow: number | null }} ModelInfo */
 
-const NIM_GATEWAY_MAX_TOKENS = 1_048_576; // "Max tokens must not exceed 1048576" (NIM validation)
+const GEMINI_MAX_OUTPUT = 65_536;
+const GEMINI_CONTEXT = 1_048_576;
 
 /** @type {ModelInfo[]} */
 export const MODELS = [
   {
-    id: "deepseek-ai/deepseek-v4.1-flash",
-    label: "DeepSeek V4.1 Flash",
-    vendor: "DeepSeek",
-    description: "Fast general model with optional step-by-step thinking.",
-    reasoning: "toggle",
-    thinkingKwargs: { thinking: false },
-    maxOutput: NIM_GATEWAY_MAX_TOKENS,
-    contextWindow: null,
+    id: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    vendor: "Google",
+    description: "Latest Flash model: strong reasoning, code and analysis.",
+    reasoning: "always", // levels low/medium/high; "minimal" returns an error
+    maxOutput: GEMINI_MAX_OUTPUT,
+    contextWindow: GEMINI_CONTEXT,
   },
   {
-    id: "nvidia/nemotron-3-super-120b-a12b",
-    label: "Nemotron 3 Super",
-    vendor: "NVIDIA",
-    description: "Large reasoning model, strong at analysis and code.",
-    reasoning: "toggle",
-    thinkingKwargs: { enable_thinking: false },
-    maxOutput: NIM_GATEWAY_MAX_TOKENS,
-    contextWindow: null,
-  },
-  {
-    id: "z-ai/glm-5.3-flash",
-    label: "GLM 5.3 Flash",
-    vendor: "Z.ai",
-    description: "Quick responses with built-in reasoning.",
+    id: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
+    vendor: "Google",
+    description: "Balanced speed and quality with built-in thinking.",
     reasoning: "always",
-    maxOutput: NIM_GATEWAY_MAX_TOKENS,
-    contextWindow: null,
+    maxOutput: GEMINI_MAX_OUTPUT,
+    contextWindow: GEMINI_CONTEXT,
   },
   {
-    id: "openai/gpt-oss-20b",
-    label: "gpt-oss 20B",
-    vendor: "OpenAI",
-    description: "Compact open-weight reasoning model.",
-    reasoning: "always",
-    maxOutput: 131_072, // "max_model_len=max_total_tokens=131072"
-    contextWindow: 131_072,
+    id: "gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite",
+    vendor: "Google",
+    description: "Fastest responses; thinking is optional.",
+    reasoning: "toggle",
+    thinkingOn: "medium",
+    thinkingOff: "minimal", // the model's default level
+    maxOutput: GEMINI_MAX_OUTPUT,
+    contextWindow: GEMINI_CONTEXT,
   },
   {
-    id: "meta/llama-3.2-11b-vision-instruct",
-    label: "Llama 3.2 11B",
-    vendor: "Meta",
-    description: "Lightweight instruction model, no reasoning trace.",
-    reasoning: "none",
-    maxOutput: 131_072, // "maximum context length is 131072 tokens"
-    contextWindow: 131_072,
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    vendor: "Google",
+    description: "Compact, low-latency model; thinking is optional.",
+    reasoning: "toggle",
+    thinkingOn: "medium",
+    thinkingOff: "minimal",
+    maxOutput: GEMINI_MAX_OUTPUT,
+    contextWindow: GEMINI_CONTEXT,
   },
 ];
 
