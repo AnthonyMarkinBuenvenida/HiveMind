@@ -1,22 +1,27 @@
-// Server-side API layer — the only code that sees GEMINI_API_KEY.
+// Server-side API layer — the only code that sees the provider keys (GEMINI_API_KEY, OPENROUTER_API_KEY).
 // Runs inside server.ts (Express: local dev, Google AI Studio, Cloud Run) and as Vercel
 // functions (api/*.mjs). HiveMind is a public demo: there is no sign-in; abuse protection is
 // rate limiting (server/limits.mjs), request limits and validation.
+// Provider specifics (request format, stream parsing) live in server/providers/.
 //
 // Routes:
-//   GET  /api/health  -> { status: "ok" | "missing_key" | "auth_failed" | "unreachable", message } (?fresh: at most every 5s)
+//   GET  /api/health  -> { status: "ok" | "missing_key" | "auth_failed" | "unreachable", message, providers } (?fresh: at most every 5s)
 //   GET  /api/models  -> { models, defaultModel, limits }
 //   POST /api/chat    -> text/event-stream of normalized events (see docs/API.md)
 
-import { ApiError, GoogleGenAI } from "@google/genai";
 import { waitUntil } from "@vercel/functions";
 import { clientIp, isSameOrigin, logId } from "./http.mjs";
 import { acquireChat, LimitError, limitScope } from "./limits.mjs";
 import { MODELS, findModel, defaultModelId } from "./models.mjs";
-import { modelOutputLimit, outputCap, parseLimitFromError, planMaxTokens } from "./tokens.mjs";
+import { geminiProvider } from "./providers/gemini.mjs";
+import { openrouterProvider } from "./providers/openrouter.mjs";
+import { UpstreamError } from "./providers/upstream.mjs";
+import { modelOutputLimit, outputCap, planMaxTokens } from "./tokens.mjs";
 
-// How long Gemini may take to start streaming (send response headers). It is always capped
-// below the stream limit so a slow start can still produce an answer.
+const PROVIDERS = { gemini: geminiProvider, openrouter: openrouterProvider };
+
+// How long a provider may take to start streaming (send response headers). OpenRouter's free models
+// can queue; the wait is always capped below the stream limit so a slow start can still produce an answer.
 function headersTimeoutMs() {
   const s = Number(process.env.UPSTREAM_QUEUE_TIMEOUT_SECONDS);
   const wanted = Number.isFinite(s) && s > 0 ? s * 1000 : 120_000;
@@ -24,16 +29,11 @@ function headersTimeoutMs() {
 }
 const IDLE_TIMEOUT_MS = 60_000; // max silence between streamed chunks
 const HEALTH_TTL_MS = 60_000;
-const HEALTH_FRESH_MIN_MS = 5_000; // "Re-check" can't be used to hammer Gemini's models endpoint
+const HEALTH_FRESH_MIN_MS = 5_000; // "Re-check" can't be used to hammer the providers
 const MAX_BODY_BYTES = 2_000_000;
 const MAX_MESSAGES = 200;
 const MAX_TOTAL_CHARS = 600_000;
 const MAX_SYSTEM_CHARS = 8_000;
-
-const MID_STREAM_FAILURE = "Gemini stopped partway through, usually because the model is under high demand. Try regenerating or pick another model.";
-
-// Gemini finish reasons that mean the response was withheld, not completed.
-const BLOCKED_REASONS = new Set(["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"]);
 
 /**
  * Longest a single response may stream. On Vercel and Cloud Run the platform ends a request at
@@ -57,21 +57,10 @@ class HttpError extends Error {
   }
 }
 
-function config() {
-  return {
-    key: (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim(),
-    // Optional override (tests point it at an unreachable address).
-    baseUrl: process.env.GEMINI_BASE_URL?.trim() || undefined,
-  };
-}
-
-let client = null;
-
-function gemini({ key, baseUrl }) {
-  if (client?.key !== key || client?.baseUrl !== baseUrl) {
-    client = { key, baseUrl, ai: new GoogleGenAI({ apiKey: key, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) }) };
-  }
-  return client.ai;
+/** Models whose provider has a key; every model when none is configured (health then reports missing_key). */
+function availableModels() {
+  const ready = MODELS.filter((m) => PROVIDERS[m.provider].configured());
+  return ready.length ? ready : MODELS;
 }
 
 function sendJson(res, status, body, headers = {}) {
@@ -129,69 +118,74 @@ function validateMessages(input) {
   return messages;
 }
 
-/** Gemini's own message out of an SDK error (its message is often the raw JSON error body). */
-function upstreamDetail(err) {
-  const text = String(err?.message ?? "");
-  const json = text.indexOf("{");
-  if (json >= 0) {
-    try {
-      const j = JSON.parse(text.slice(json));
-      return String(j.error?.message || j.message || "").slice(0, 300);
-    } catch {
-      // not JSON: fall through
-    }
-  }
-  return text.trim().slice(0, 300);
+function isAuthError({ status, detail }) {
+  // Gemini answers an invalid key with 400 INVALID_ARGUMENT "API key not valid", OpenRouter with 401.
+  return status === 401 || ((status === 400 || status === 403) && /api[ _-]?key|unauthori[sz]ed|permission/i.test(detail));
 }
 
-function isAuthError(status, detail) {
-  // Gemini answers an invalid key with 400 INVALID_ARGUMENT "API key not valid", not 401.
-  return status === 401 || status === 403 || (status === 400 && /api[ _]?key/i.test(detail));
+function midStreamMessage(provider) {
+  return `${provider.label} stopped partway through, usually because the model is busy. Try regenerating or pick another model.`;
 }
 
-function mapUpstreamError(err) {
-  const status = err instanceof ApiError ? err.status : 0;
-  const detail = upstreamDetail(err);
-  if (isAuthError(status, detail)) return new HttpError(502, "Google rejected the server's API key. The site owner needs to check GEMINI_API_KEY.", "auth_failed");
-  if (status === 404) return new HttpError(502, "This model isn't available on the Gemini API right now. Pick another model.", "model_unavailable");
-  if (status === 429) return new HttpError(429, "The Gemini API rate limit or quota was reached. Wait a moment and try again.", "rate_limited");
+/** UpstreamError (or anything else thrown while talking to a provider) -> user-readable HttpError. */
+function mapUpstreamError(err, provider) {
+  if (!(err instanceof UpstreamError)) return new HttpError(502, `Could not reach ${provider.label}. Try again shortly.`, "upstream_unreachable");
+  const { status, detail } = err;
+  if (err.kind === "midstream") return new HttpError(502, midStreamMessage(provider), "upstream_error");
+  if (isAuthError(err)) return new HttpError(502, `${provider.vendor} rejected the server's API key. The site owner needs to check ${provider.keyEnv}.`, "auth_failed");
+  if (status === 402) return new HttpError(402, `${provider.label} needs credits for this request. Pick another model.`, "payment_required");
+  if (status === 404) return new HttpError(502, `This model isn't available on ${provider.label} right now. Pick another model.`, "model_unavailable");
+  if (status === 429) return new HttpError(429, `${provider.label}'s rate limit or daily quota was reached${detail ? ` (${detail})` : ""}. Wait a moment or pick another model.`, "rate_limited");
   if (status >= 400 && status < 500) return new HttpError(400, `The model rejected the request${detail ? `: ${detail}` : "."}`, "invalid_request");
-  if (status === 503) return new HttpError(503, "Gemini is under high demand right now. Try again in a moment or pick another model.", "upstream_busy");
-  if (status >= 500) return new HttpError(502, `The Gemini API returned an error (${status}). Try again shortly.`, "upstream_error");
-  return new HttpError(502, "Could not reach the Gemini API. Try again shortly.", "upstream_unreachable");
+  if (status === 503) return new HttpError(503, `${provider.label} is under high demand right now. Try again in a moment or pick another model.`, "upstream_busy");
+  return new HttpError(502, `${provider.label} returned an error (${status}). Try again shortly.`, "upstream_error");
 }
 
 let healthCache = null;
 
+const HEALTH_RANK = { ok: 0, unreachable: 1, auth_failed: 2 };
+
+async function checkProvider(provider) {
+  const model = MODELS.find((m) => m.provider === provider.id);
+  try {
+    await provider.check(model.id, AbortSignal.timeout(10_000));
+    return { status: "ok", message: `Connected to ${provider.label}.` };
+  } catch (err) {
+    if (err instanceof UpstreamError && isAuthError(err)) return { status: "auth_failed", message: `${provider.vendor} rejected ${provider.keyEnv}.` };
+    if (err instanceof UpstreamError && err.status) return { status: "unreachable", message: `${provider.label} responded with ${err.status}.` };
+    return { status: "unreachable", message: `Could not reach ${provider.label}.` };
+  }
+}
+
 async function health(res, fresh) {
-  const cfg = config();
-  if (!cfg.key) return sendJson(res, 200, { status: "missing_key", message: "GEMINI_API_KEY is not set on the server." });
+  const configured = Object.values(PROVIDERS).filter((p) => p.configured());
+  if (!configured.length) {
+    const keys = Object.values(PROVIDERS).map((p) => p.keyEnv).join(" or ");
+    return sendJson(res, 200, { status: "missing_key", message: `No API key is set on the server (${keys}).`, providers: {} });
+  }
   const age = healthCache ? Date.now() - healthCache.at : Infinity;
   if (age < (fresh ? HEALTH_FRESH_MIN_MS : HEALTH_TTL_MS)) return sendJson(res, 200, healthCache.body);
 
-  let body;
-  try {
-    await gemini(cfg).models.get({ model: defaultModelId(), config: { abortSignal: AbortSignal.timeout(10_000) } });
-    body = { status: "ok", message: "Connected to the Gemini API." };
-  } catch (err) {
-    const status = err instanceof ApiError ? err.status : 0;
-    if (isAuthError(status, upstreamDetail(err))) body = { status: "auth_failed", message: "Google rejected the server's API key." };
-    else if (status) body = { status: "unreachable", message: `The Gemini API responded with ${status}.` };
-    else body = { status: "unreachable", message: "Could not reach the Gemini API." };
-  }
-  healthCache = { at: Date.now(), body };
+  const results = await Promise.all(configured.map(async (p) => [p, await checkProvider(p)]));
+  const worst = results.reduce((a, b) => (HEALTH_RANK[b[1].status] > HEALTH_RANK[a[1].status] ? b : a));
+  const status = worst[1].status;
+  const message = status === "ok" ? `Connected to ${configured.map((p) => p.label).join(" and ")}.` : results.map(([, r]) => r.message).join(" ");
   // Which deployment answered (non-secret; helps verify rollouts).
   const deployment = process.env.VERCEL_DEPLOYMENT_ID?.slice(-8) ?? process.env.K_REVISION ?? "local";
-  sendJson(res, 200, { ...body, deployment });
+  const body = { status, message, providers: Object.fromEntries(results.map(([p, r]) => [p.id, r.status])), deployment };
+  healthCache = { at: Date.now(), body };
+  sendJson(res, 200, body);
 }
 
 function models(res) {
+  const list = availableModels();
   sendJson(res, 200, {
-    defaultModel: defaultModelId(),
-    models: MODELS.map((m) => ({
+    defaultModel: defaultModelId(list),
+    models: list.map((m) => ({
       id: m.id,
       label: m.label,
       vendor: m.vendor,
+      provider: PROVIDERS[m.provider].label,
       description: m.description,
       reasoning: m.reasoning,
       contextWindow: m.contextWindow,
@@ -202,8 +196,7 @@ function models(res) {
 }
 
 async function chat(req, res) {
-  const cfg = config();
-  if (!cfg.key) throw new HttpError(503, "The server has no GEMINI_API_KEY configured.", "missing_key");
+  if (!Object.values(PROVIDERS).some((p) => p.configured())) throw new HttpError(503, "The server has no API key configured.", "missing_key");
 
   let release;
   try {
@@ -218,16 +211,18 @@ async function chat(req, res) {
     if (!res.writableFinished) waitUntil(release());
   });
   try {
-    await streamCompletion(req, res, gemini(cfg), release);
+    await streamCompletion(req, res, release);
   } finally {
     await release(); // idempotent; covers errors thrown before streaming started
   }
 }
 
-async function streamCompletion(req, res, ai, release) {
+async function streamCompletion(req, res, release) {
   const body = await readJson(req);
-  const model = findModel(body.model);
+  const model = findModel(body.model, availableModels());
   if (!model) throw new HttpError(400, "Unknown model. Pick one from the model menu.", "invalid_model");
+  const provider = PROVIDERS[model.provider];
+  if (!provider.configured()) throw new HttpError(503, `The server has no ${provider.keyEnv} configured.`, "missing_key");
 
   const messages = validateMessages(body.messages);
   const system = typeof body.system === "string" ? body.system.trim().slice(0, MAX_SYSTEM_CHARS) : "";
@@ -236,28 +231,8 @@ async function streamCompletion(req, res, ai, release) {
   const maxTokens = planMaxTokens(model, body.maxTokens, promptChars);
   if (maxTokens < 256) throw new HttpError(413, "This conversation fills the model's context window. Start a new chat or pick a model with a larger context.", "too_long");
 
-  // Gemini roles are "user" and "model"; empty turns (e.g. a reply stopped before any text) are rejected.
-  const contents = messages
-    .filter((m) => m.content.trim())
-    .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
-
-  const upstream = new AbortController();
-  const genConfig = {
-    temperature: clamp(body.temperature, 0, 2, 0.6),
-    topP: clamp(body.topP, 0.01, 1, 0.95),
-    maxOutputTokens: maxTokens,
-    abortSignal: upstream.signal,
-  };
-  if (system) genConfig.systemInstruction = system;
-  if (model.reasoning !== "none") {
-    genConfig.thinkingConfig = { includeThoughts: true };
-    if (model.reasoning === "toggle") {
-      const level = body.thinking === false ? model.thinkingOff : model.thinkingOn;
-      if (level) genConfig.thinkingConfig.thinkingLevel = level;
-    }
-  }
-
   const limitMs = streamLimitMs();
+  const upstream = new AbortController();
   let abortCause = null; // "client" | "headers_timeout" | "idle_timeout" | "max_duration"
   let finished = false;
   const abort = (cause) => {
@@ -275,30 +250,25 @@ async function streamCompletion(req, res, ai, release) {
     clearTimeout(maxTimer);
   };
 
-  const request = () => ai.models.generateContentStream({ model: model.id, contents, config: genConfig });
-
-  let stream;
+  let reply;
   try {
-    try {
-      stream = await request();
-    } catch (err) {
-      // A 400 we can recover from is retried once instead of failing the user's request:
-      // an output limit lower than expected, or a thinking level this model doesn't accept.
-      if (abortCause || !(err instanceof ApiError) || err.status !== 400) throw err;
-      const detail = upstreamDetail(err);
-      const lower = parseLimitFromError(detail, genConfig.maxOutputTokens);
-      if (lower) genConfig.maxOutputTokens = lower;
-      else if (genConfig.thinkingConfig?.thinkingLevel && /thinking/i.test(detail)) delete genConfig.thinkingConfig.thinkingLevel;
-      else throw err;
-      stream = await request();
-    }
+    reply = await provider.open({
+      model,
+      messages,
+      system,
+      temperature: clamp(body.temperature, 0, 2, 0.6),
+      topP: clamp(body.topP, 0.01, 1, 0.95),
+      maxTokens,
+      thinking: body.thinking,
+      signal: upstream.signal,
+    });
   } catch (err) {
     stopTimers();
     if (abortCause === "client") return;
     if (abortCause === "headers_timeout") {
-      throw new HttpError(504, `${model.label} didn't start responding within ${Math.round(queueMs / 1000)}s. Try again or pick another model.`, "upstream_timeout");
+      throw new HttpError(504, `${model.label} didn't start responding within ${Math.round(queueMs / 1000)}s. It's busy right now; try again or pick another model.`, "upstream_timeout");
     }
-    throw mapUpstreamError(err);
+    throw mapUpstreamError(err, provider);
   }
 
   res.writeHead(200, {
@@ -307,7 +277,7 @@ async function streamCompletion(req, res, ai, release) {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-  writeEvent(res, { type: "start", model: model.id, maxTokens: genConfig.maxOutputTokens, limitSeconds: Math.floor(limitMs / 1000) });
+  writeEvent(res, { type: "start", model: model.id, maxTokens: reply.maxTokens, limitSeconds: Math.floor(limitMs / 1000) });
 
   const resetIdle = () => {
     clearTimeout(timer);
@@ -316,51 +286,26 @@ async function streamCompletion(req, res, ai, release) {
   resetIdle();
 
   let finishReason = null;
-  let usage = null;
   try {
-    for await (const chunk of stream) {
+    for await (const event of reply.events) {
       resetIdle();
-      if (chunk.promptFeedback?.blockReason) {
-        writeEvent(res, { type: "error", message: `Gemini blocked this prompt (${chunk.promptFeedback.blockReason.toLowerCase()}). Try rephrasing it.`, code: "blocked" });
-        continue;
-      }
-      const candidate = chunk.candidates?.[0];
-      for (const part of candidate?.content?.parts ?? []) {
-        if (part.text) writeEvent(res, { type: part.thought ? "reasoning" : "content", text: part.text });
-      }
-      if (candidate?.finishReason) finishReason = candidate.finishReason;
-      if (chunk.usageMetadata) usage = chunk.usageMetadata; // cumulative: the last one is the total
+      if (event.type === "finish") finishReason = event.reason;
+      else if (event.type !== "alive") writeEvent(res, event);
     }
-    if (usage) {
-      const thoughts = usage.thoughtsTokenCount ?? 0;
-      writeEvent(res, {
-        type: "usage",
-        // "completion" includes thinking tokens, as the UI expects.
-        usage: { prompt: usage.promptTokenCount ?? null, completion: (usage.candidatesTokenCount ?? 0) + thoughts, reasoning: thoughts || null },
-      });
-    }
-    if (!finishReason && !abortCause) {
-      // Gemini reports a failure mid-stream (e.g. 503 high demand) as an error event that the SDK
-      // drops, so the stream just ends without a finish reason.
-      writeEvent(res, { type: "error", message: MID_STREAM_FAILURE, code: "upstream_error" });
-    }
-    if (BLOCKED_REASONS.has(finishReason)) {
-      writeEvent(res, { type: "error", message: `Gemini stopped this response (${finishReason.toLowerCase().replace(/_/g, " ")}). Try rephrasing your message.`, code: "blocked" });
-    }
-    writeEvent(res, { type: "done", finishReason: finishReason === "MAX_TOKENS" ? "length" : finishReason === "STOP" ? "stop" : finishReason?.toLowerCase() ?? null });
+    writeEvent(res, { type: "done", finishReason });
   } catch (err) {
     if (abortCause !== "client") {
-      const message =
-        abortCause === "idle_timeout"
-          ? "The model stopped responding partway through. Try regenerating."
-          : abortCause === "max_duration"
-            ? `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`
-            : abortCause
-              ? "The connection to the Gemini API was interrupted."
-              : err instanceof ApiError
-                ? mapUpstreamError(err).message
-                : MID_STREAM_FAILURE; // the SDK fails to parse the error body Gemini sends after the dropped error event
-      writeEvent(res, { type: "error", message, code: abortCause ?? (err instanceof ApiError ? mapUpstreamError(err).code : "upstream_error") });
+      let message;
+      let code = abortCause;
+      if (abortCause === "idle_timeout") message = "The model stopped responding partway through. Try regenerating.";
+      else if (abortCause === "max_duration") message = `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`;
+      else if (abortCause) message = `The connection to ${provider.label} was interrupted.`;
+      else if (err instanceof UpstreamError) ({ message, code } = mapUpstreamError(err, provider));
+      else {
+        message = midStreamMessage(provider);
+        code = "upstream_error";
+      }
+      writeEvent(res, { type: "error", message, code });
     }
   } finally {
     stopTimers();

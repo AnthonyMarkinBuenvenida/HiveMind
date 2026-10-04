@@ -1,13 +1,13 @@
 # HiveMind · AI Factory
 
-A public demo of a workspace-style AI chat app powered by the **Google Gemini API**. It runs in Google AI Studio (Build), on Cloud Run, or on Vercel. Anyone with the link can use it — there is no sign-in. The Gemini key stays server-side, and rate limits are the abuse protection.
+A public demo of a workspace-style AI chat app powered by the **Google Gemini API** and **OpenRouter**. It runs in Google AI Studio (Build), on Cloud Run, or on Vercel. Anyone with the link can use it — there is no sign-in. API keys stay server-side, and rate limits are the abuse protection.
 
 ## Architecture
 
 ```
 Browser ──HTTPS──▶ server.ts (Express) ─┬─ React SPA (Vite middleware in dev, dist/ in production)
-                                        └─ /api/{chat,models,health} → server/api.mjs ──▶ Gemini API (@google/genai)
-                                                                          │
+                                        └─ /api/{chat,models,health} → server/api.mjs ─┬─▶ Gemini API (server/providers/gemini.mjs, @google/genai)
+                                                                          ├─▶ OpenRouter (server/providers/openrouter.mjs)
                                                                           └─▶ Postgres (optional: global rate-limit counters)
 ```
 
@@ -16,7 +16,7 @@ All API logic is in `server/`. `server.ts` is the entry point for local runs, Go
 ## Google AI Studio
 
 1. In [AI Studio Build](https://aistudio.google.com/apps), click **+** in the prompt box → **Import from GitHub**, pick this repository and click **Import repository**.
-2. AI Studio injects `GEMINI_API_KEY` server-side (Settings → **Secrets**); nothing else is required. `metadata.json` declares the server-side Gemini capability.
+2. AI Studio injects `GEMINI_API_KEY` server-side. To add the OpenRouter models, add `OPENROUTER_API_KEY` under Settings → **Secrets**. `metadata.json` declares the server-side Gemini capability.
 3. The preview runs `npm run dev` (Express + Vite on port 3000). **Deploy** publishes to Cloud Run, which runs `npm run build` and `npm start`.
 
 Optional secrets: `DEFAULT_MODEL`, `DATABASE_URL` (global rate limits), `RATE_LIMIT_*`, `MAX_CONCURRENT_STREAMS`, `MAX_OUTPUT_TOKENS`, `LOG_SALT` — see `.env.example`.
@@ -25,7 +25,7 @@ Optional secrets: `DEFAULT_MODEL`, `DATABASE_URL` (global rate limits), `RATE_LI
 
 ```bash
 npm install
-cp .env.example .env      # set GEMINI_API_KEY (https://aistudio.google.com/apikey)
+cp .env.example .env      # set GEMINI_API_KEY and/or OPENROUTER_API_KEY
 npm run dev               # http://localhost:3000
 ```
 
@@ -35,19 +35,19 @@ npm run dev               # http://localhost:3000
 | `npm run build` | Type-check, then build to `dist/` |
 | `npm start` | Serve `dist/` and the API with production security headers |
 | `npm run preview` | Build, then `npm start` |
-| `npm test` | Server (incl. streaming against a fake Gemini API), token, theme-contrast, settings, markdown and math tests (`node --test`, no network) |
+| `npm test` | Server (incl. streaming against fake Gemini and OpenRouter APIs), token, theme-contrast, settings, markdown and math tests (`node --test`, no network) |
 
 Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres store test against a real database, set `POSTGRES_URL_FOR_TESTS`.
 
 ## Deploying to Vercel (optional)
 
-`vercel.json` sets the build, function durations, request cancellation and security headers. Set `GEMINI_API_KEY` (Sensitive) and optionally `DATABASE_URL` in the project's environment variables, then `vercel deploy --prod` and check `GET /api/health`.
+`vercel.json` sets the build, function durations, request cancellation and security headers. Set `GEMINI_API_KEY` and/or `OPENROUTER_API_KEY` (Sensitive) and optionally `DATABASE_URL` in the project's environment variables, then `vercel deploy --prod` and check `GET /api/health`.
 
 ## Features
 
 - Streaming chat with stop, regenerate, retry, edit-and-resend, and **Continue** when a response hits the output or time limit
-- Model picker (4 free-tier Gemini models), visible thinking (thought summaries), thinking on/off on Flash-Lite, temperature, top-p, system prompt
-- **Max output up to 50,000 tokens** (Gemini allows 65,536), with presets
+- Model picker grouped by provider: 4 free-tier Gemini models and 4 free OpenRouter models (Nemotron 3 Super/Ultra, Qwen 3.8, North Mini Code); visible thinking, thinking on/off where supported, temperature, top-p, system prompt
+- **Max output up to 50,000 tokens**, with presets
 - Math (KaTeX) and syntax highlighting (20+ languages), lazy-loaded; Markdown tables, code copy/wrap
 - Conversations stored in the browser: search, rename, export Markdown/JSON, delete, delete-all
 - Text-file attachments (picker or drag-and-drop)
@@ -59,7 +59,7 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 | | Value | Notes |
 |---|---|---|
 | Messages per visitor (IP) | 6 / minute, 120 / day | Global across instances only with `DATABASE_URL` |
-| Messages for the whole demo | 1,500 / day | Protects the Gemini quota |
+| Messages for the whole demo | 1,500 / day | Protects the providers' quotas |
 | Simultaneous responses per visitor | 2 | Slots are 30 s leases renewed while streaming |
 | One response | ≤ 285 s on Cloud Run / Vercel, 10 min locally | Platform request timeout (300 s) − 15 s. Then "Paused at the time limit" + Continue |
 | Output | ≤ 50,000 tokens | |
@@ -67,7 +67,8 @@ Without `DATABASE_URL`, rate limits live in process memory. To run the Postgres 
 
 ## Known limitations
 
-- **Public by link**: anyone with the URL spends the demo's Gemini quota (bounded by the limits above, and by Gemini's own free-tier rate limits — a `429` is shown as "rate limit or quota reached").
+- **Public by link**: anyone with the URL spends the demo's quotas (bounded by the limits above and by the providers' own free-tier limits — a `429` is shown as "rate limit or daily quota reached").
+- **OpenRouter free tier**: a key without credits allows **50 requests per day** across all `:free` models, and popular free models are sometimes rate-limited upstream. Adding $10 of credit raises the free-model limit to 1,000/day.
 - **Chats live in each browser** (`localStorage`); they don't sync and aren't on the server.
 - **Attachments are text only** — no image/PDF/Office parsing.
 - A visitor's IP is the rate-limit identity: people behind one NAT share a quota; a visitor with many IPs gets more (the global daily cap still applies).

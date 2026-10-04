@@ -26,7 +26,7 @@ interface SidebarProps {
 
 const HEALTH_LABEL = {
   checking: "Checking…",
-  ok: "Gemini API connected",
+  ok: "Connected",
   missing_key: "API key missing",
   auth_failed: "API key rejected",
   unreachable: "API unreachable",

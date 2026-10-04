@@ -165,7 +165,7 @@ function DataTab() {
           {health === "checking" ? "Checking…" : "Re-check"}
         </button>
       </Row>
-      <Row label="Provider" description={`Google Gemini API · ${models.length} models. The API key stays on the server and is never sent to this browser.`} />
+      <Row label="Provider" description={`${[...new Set(models.map((m) => m.provider))].join(" and ")} · ${models.length} models. API keys stay on the server and are never sent to this browser.`} />
       <Row label="Export conversations" description={`Download all ${conversations.length} conversations as JSON.`}>
         <button
           type="button"

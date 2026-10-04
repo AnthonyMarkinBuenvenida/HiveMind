@@ -126,7 +126,9 @@ describe("API router (public demo)", () => {
     assert.equal(r.status, 200);
     assert.equal(r.headers.get("set-cookie"), null);
     const body = await r.json();
-    assert.equal(body.models.length, MODELS.length);
+    // Only GEMINI_API_KEY is set here: OpenRouter models are hidden until OPENROUTER_API_KEY is.
+    assert.deepEqual(body.models.map((m) => m.id), MODELS.filter((m) => m.provider === "gemini").map((m) => m.id));
+    assert.ok(body.models.every((m) => m.provider === "Gemini API"));
     assert.deepEqual(body.limits.outputCap, 50_000);
     assert.equal(body.limits.rateLimitScope, "per-instance");
     for (const m of body.models) assert.ok(m.maxOutput <= 50_000);

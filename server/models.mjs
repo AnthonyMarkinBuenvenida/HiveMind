@@ -1,16 +1,19 @@
-// Curated Gemini model registry. Only free-tier models are listed so the demo works with the key
-// Google AI Studio injects (GEMINI_API_KEY). gemini-3.1-pro-preview is paid-only; add it here if
-// the key has billing enabled.
+// Curated model registry across providers (server/providers/). Only free models are listed so the
+// demo works without billing: Gemini's free tier (the key Google AI Studio injects) and OpenRouter's
+// `:free` models (a free-tier OpenRouter key allows 50 requests/day across them).
+// gemini-3.1-pro-preview is paid-only; add it here if the Gemini key has billing enabled.
 //
+// provider: "gemini" | "openrouter" — a model is offered only when its provider's key is set.
 // reasoning:
-//   "toggle" — streams thought summaries; thinking on/off sends thinkingLevel `thinkingOn`/`thinkingOff`
-//   "always" — streams thought summaries; the model rejects the lowest level, so it can't be turned off
+//   "toggle" — streams reasoning; can be switched off (Gemini: thinkingLevel `thinkingOn`/`thinkingOff`;
+//              OpenRouter: `reasoning: { enabled: false }`)
+//   "always" — streams reasoning; can't be switched off
 //   "none"   — never streams reasoning
 //
-// maxOutput:     output token limit from the model page (ai.google.dev/gemini-api/docs/models, 2026-10).
-// contextWindow: input token limit. The app further caps output at 50,000 (server/tokens.mjs).
+// maxOutput:     Gemini: output limit from the model page (2026-10). OpenRouter: top_provider.max_completion_tokens.
+// contextWindow: input/context limit. The app further caps output at 50,000 (server/tokens.mjs).
 
-/** @typedef {{ id: string, label: string, vendor: string, description: string, reasoning: "toggle" | "always" | "none", thinkingOn?: string, thinkingOff?: string, maxOutput: number, contextWindow: number | null }} ModelInfo */
+/** @typedef {{ id: string, provider: "gemini" | "openrouter", label: string, vendor: string, description: string, reasoning: "toggle" | "always" | "none", thinkingOn?: string, thinkingOff?: string, maxOutput: number, contextWindow: number | null }} ModelInfo */
 
 const GEMINI_MAX_OUTPUT = 65_536;
 const GEMINI_CONTEXT = 1_048_576;
@@ -19,6 +22,7 @@ const GEMINI_CONTEXT = 1_048_576;
 export const MODELS = [
   {
     id: "gemini-3.8-flash",
+    provider: "gemini",
     label: "Gemini 3.8 Flash",
     vendor: "Google",
     description: "Latest Flash model: strong reasoning, code and analysis.",
@@ -28,6 +32,7 @@ export const MODELS = [
   },
   {
     id: "gemini-3.5-flash",
+    provider: "gemini",
     label: "Gemini 3.5 Flash",
     vendor: "Google",
     description: "Balanced speed and quality with built-in thinking.",
@@ -37,6 +42,7 @@ export const MODELS = [
   },
   {
     id: "gemini-3.5-flash-lite",
+    provider: "gemini",
     label: "Gemini 3.5 Flash-Lite",
     vendor: "Google",
     description: "Fastest responses; thinking is optional.",
@@ -48,6 +54,7 @@ export const MODELS = [
   },
   {
     id: "gemini-3.1-flash-lite",
+    provider: "gemini",
     label: "Gemini 3.1 Flash-Lite",
     vendor: "Google",
     description: "Compact, low-latency model; thinking is optional.",
@@ -57,13 +64,54 @@ export const MODELS = [
     maxOutput: GEMINI_MAX_OUTPUT,
     contextWindow: GEMINI_CONTEXT,
   },
+  {
+    id: "nvidia/nemotron-3-super-120b-a12b:free",
+    provider: "openrouter",
+    label: "Nemotron 3 Super",
+    vendor: "NVIDIA",
+    description: "Large reasoning model, strong at analysis and code.",
+    reasoning: "toggle",
+    maxOutput: 235_929,
+    contextWindow: 262_144,
+  },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    provider: "openrouter",
+    label: "Nemotron 3 Ultra",
+    vendor: "NVIDIA",
+    description: "NVIDIA's largest open model, for hard reasoning.",
+    reasoning: "toggle",
+    maxOutput: 65_536,
+    contextWindow: 1_000_000,
+  },
+  {
+    id: "qwen/qwen3.8-27b:free",
+    provider: "openrouter",
+    label: "Qwen 3.8 27B",
+    vendor: "Qwen",
+    description: "Fast mid-size model with optional thinking.",
+    reasoning: "toggle",
+    maxOutput: 235_929,
+    contextWindow: 262_144,
+  },
+  {
+    id: "cohere/north-mini-code:free",
+    provider: "openrouter",
+    label: "North Mini Code",
+    vendor: "Cohere",
+    description: "Coding-focused model with built-in reasoning.",
+    reasoning: "always", // `reasoning: { enabled: false }` garbled its answer (2026-10-04)
+    maxOutput: 64_000,
+    contextWindow: 256_000,
+  },
 ];
 
-export function findModel(id) {
-  return MODELS.find((m) => m.id === id);
+export function findModel(id, models = MODELS) {
+  return models.find((m) => m.id === id);
 }
 
-export function defaultModelId() {
+/** DEFAULT_MODEL when it is among `models`, else the first of them. */
+export function defaultModelId(models = MODELS) {
   const configured = process.env.DEFAULT_MODEL;
-  return configured && findModel(configured) ? configured : MODELS[0].id;
+  return configured && findModel(configured, models) ? configured : models[0]?.id;
 }

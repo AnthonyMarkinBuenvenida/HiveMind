@@ -6,6 +6,8 @@ export interface ModelInfo {
   id: string;
   label: string;
   vendor: string;
+  /** Service that runs the model ("Gemini API", "OpenRouter"). */
+  provider: string;
   description: string;
   reasoning: ReasoningMode;
   /** Largest output this deployment allows for the model: min(50K app cap, verified API max). */

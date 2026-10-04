@@ -1,18 +1,18 @@
 # API layer
 
-`server/api.mjs` sits between the browser and the Gemini API (`@google/genai`). It holds the key, rate-limits callers, validates input, plans the output-token budget, normalizes Gemini's stream into the app's own events, and maps upstream failures to user-readable errors. The same handler runs inside `server.ts` (local, Google AI Studio, Cloud Run) and as Vercel functions (`api/chat.mjs`, `api/models.mjs`, `api/health.mjs`). All routes are public — there is no sign-in.
+`server/api.mjs` sits between the browser and the model providers. It holds the keys, rate-limits callers, validates input, plans the output-token budget, and maps upstream failures to user-readable errors. Provider adapters in `server/providers/` translate the request and normalize each provider's stream into the app's own events: `gemini.mjs` (Gemini API via `@google/genai`) and `openrouter.mjs` (OpenRouter's OpenAI-compatible API). Each throws `UpstreamError { status, detail }` for provider failures. The same handler runs inside `server.ts` (local, Google AI Studio, Cloud Run) and as Vercel functions (`api/chat.mjs`, `api/models.mjs`, `api/health.mjs`). All routes are public — there is no sign-in.
 
 ## Routes
 
 ### `GET /api/health`
-`{ status: "ok" | "missing_key" | "auth_failed" | "unreachable", message, deployment }` — a real `models.get` call for the default model, cached 60 s (`?fresh` bypasses the cache at most once per 5 s). `auth_failed` means Google rejected the server's key (Gemini reports a bad key as `400 API key not valid`). `deployment` is the Cloud Run revision, the last 8 chars of the Vercel deployment id, or `local`.
+`{ status: "ok" | "missing_key" | "auth_failed" | "unreachable", message, providers: { gemini?, openrouter? }, deployment }` — checks every provider that has a key (Gemini: `models.get`; OpenRouter: `GET /key`, which spends no quota), cached 60 s (`?fresh` bypasses the cache at most once per 5 s). `status` is the worst provider's. `auth_failed` means a provider rejected its key (Gemini reports a bad key as `400 API key not valid`, OpenRouter as `401`). `deployment` is the Cloud Run revision, the last 8 chars of the Vercel deployment id, or `local`.
 
 ### `GET /api/models`
 ```json
-{ "defaultModel": "…", "models": [{ "id", "label", "vendor", "description", "reasoning", "maxOutput", "contextWindow" }],
+{ "defaultModel": "…", "models": [{ "id", "label", "vendor", "provider", "description", "reasoning", "maxOutput", "contextWindow" }],
   "limits": { "outputCap": 50000, "streamSeconds": 285, "rateLimitScope": "global" } }
 ```
-`maxOutput` is what this deployment allows for the model: `min(MAX_OUTPUT_TOKENS, model output limit)`. `rateLimitScope` is `per-instance` when no database is configured.
+Only models whose provider has a key are listed (all of them when no key is set). `provider` is the display name (`"Gemini API"`, `"OpenRouter"`). `maxOutput` is what this deployment allows for the model: `min(MAX_OUTPUT_TOKENS, model output limit)`. `rateLimitScope` is `per-instance` when no database is configured.
 
 ### `POST /api/chat`
 ```json
@@ -26,22 +26,24 @@ On success: `text/event-stream`, one JSON object per `data:` frame:
 | Event | Payload |
 |---|---|
 | `start` | `{ model, maxTokens, limitSeconds }` — `maxTokens` is what was actually sent (may be below the request) |
-| `reasoning` | `{ text }` — thought-summary delta (Gemini parts with `thought: true`; requested with `includeThoughts`) |
+| `reasoning` | `{ text }` — reasoning delta (Gemini: thought-summary parts, `thought: true`; OpenRouter: `delta.reasoning`) |
 | `content` | `{ text }` — answer delta |
 | `usage` | `{ usage: { prompt, completion, reasoning } }` — `completion` = answer + thinking tokens |
-| `done` | `{ finishReason }` — `STOP` → `"stop"`, `MAX_TOKENS` → `"length"`, others lowercased. A safety/recitation stop also sends an `error` with code `blocked` |
+| `done` | `{ finishReason }` — `"stop"`, `"length"` (Gemini `STOP`/`MAX_TOKENS` are mapped), others as sent. A Gemini safety/recitation stop also sends an `error` with code `blocked` |
 | `error` | `{ message, code }` — mid-stream failure; the stream then ends |
 
-**Request mapping**: `assistant` → Gemini role `model` (empty turns dropped), `system` → `systemInstruction`, `temperature`/`topP` clamped, `maxOutputTokens` planned as below, `thinkingConfig.includeThoughts: true`. For `reasoning: "toggle"` models the `thinking` flag sends the model's `thinkingOn`/`thinkingOff` level (`medium`/`minimal`); `"always"` models send no level (their lowest level, `minimal`, is rejected).
+**Request mapping**
+- Gemini: `assistant` → role `model` (empty turns dropped), `system` → `systemInstruction`, `temperature`/`topP` clamped, `maxOutputTokens` planned as below, `thinkingConfig.includeThoughts: true`. For `reasoning: "toggle"` models the `thinking` flag sends the model's `thinkingOn`/`thinkingOff` level (`medium`/`minimal`); `"always"` models send no level (their lowest level, `minimal`, is rejected).
+- OpenRouter: OpenAI chat format (`system` first), `max_tokens`, `stream: true`, `X-Title: HiveMind`. Thinking off on a `"toggle"` model sends `reasoning: { enabled: false }` (verified to remove reasoning on Nemotron 3 Super/Ultra and Qwen 3.8; it garbled North Mini Code's answer, so that model is `"always"`). `: OPENROUTER PROCESSING` comment lines keep the idle timer alive; a `{ error }` chunk or `finish_reason: "error"` ends the stream with an error.
 
-**Output tokens** (`server/tokens.mjs`): the requested value is clamped to `[256, min(50 000, model.maxOutput)]` and to the context left after the prompt (estimated at 3 chars/token + 256 margin). One recoverable `400` is retried once: an output ceiling in the error message ("supported range is from 1 (inclusive) to N (exclusive)") lowers `maxOutputTokens`; an error mentioning thinking drops `thinkingLevel`.
+**Output tokens** (`server/tokens.mjs`): the requested value is clamped to `[256, min(50 000, model.maxOutput)]` and to the context left after the prompt (estimated at 3 chars/token + 256 margin). Gemini only: one recoverable `400` is retried once: an output ceiling in the error message ("supported range is from 1 (inclusive) to N (exclusive)") lowers `maxOutputTokens`; an error mentioning thinking drops `thinkingLevel`.
 
-**Timing**: Gemini may take up to `UPSTREAM_QUEUE_TIMEOUT_SECONDS` (default 120, capped 30 s below the stream limit) to start before a 504 `upstream_timeout`; 60 s of mid-stream silence → `idle_timeout`; at the stream limit the stream is ended cleanly with `max_duration` (the UI shows "Paused at the time limit" + Continue). On Cloud Run (`K_SERVICE`) and Vercel the stream limit is `FUNCTION_MAX_DURATION` (300 = Cloud Run's default request timeout and `vercel.json` maxDuration) − 15 s = **285 s**; locally 10 minutes.
+**Timing**: a provider may take up to `UPSTREAM_QUEUE_TIMEOUT_SECONDS` (default 120, capped 30 s below the stream limit) to start before a 504 `upstream_timeout`; 60 s of mid-stream silence → `idle_timeout`; at the stream limit the stream is ended cleanly with `max_duration` (the UI shows "Paused at the time limit" + Continue). On Cloud Run (`K_SERVICE`) and Vercel the stream limit is `FUNCTION_MAX_DURATION` (300 = Cloud Run's default request timeout and `vercel.json` maxDuration) − 15 s = **285 s**; locally 10 minutes.
 
-**Cancellation**: when the client disconnects (Stop, closed tab) the SDK request is aborted (`abortSignal`) so Gemini stops generating. On Vercel this requires `supportsCancellation: true` on the function.
+**Cancellation**: when the client disconnects (Stop, closed tab) the upstream request is aborted so the provider stops generating. On Vercel this requires `supportsCancellation: true` on the function.
 
 ### Error codes
-`forbidden_origin` 403 · `not_found` 404 · `method_not_allowed` 405 · `unsupported_media_type` 415 · `missing_key` 503 · `invalid_json` / `invalid_request` / `invalid_model` 400 · `too_large` / `too_long` 413 · `rate_limited` / `too_many_streams` 429 (with `Retry-After`) · `auth_failed` / `model_unavailable` / `upstream_error` / `upstream_unreachable` 502 · `upstream_busy` 503 (Gemini "high demand") · `upstream_timeout` 504 · in-stream: `idle_timeout`, `max_duration`, `blocked`, `upstream_error` (Gemini failed mid-stream — the SDK drops its error event, so a stream that ends without a finish reason is reported as this). Unexpected failures return 500 `server_error` with a generic message; details go to the function log only. Unknown `/api/*` paths on Vercel get the platform's 404.
+`forbidden_origin` 403 · `not_found` 404 · `method_not_allowed` 405 · `unsupported_media_type` 415 · `missing_key` 503 · `invalid_json` / `invalid_request` / `invalid_model` 400 · `too_large` / `too_long` 413 · `rate_limited` / `too_many_streams` 429 (with `Retry-After`) · `auth_failed` / `model_unavailable` / `upstream_error` / `upstream_unreachable` 502 · `payment_required` 402 (OpenRouter needs credits) · `upstream_busy` 503 ("high demand") · `upstream_timeout` 504 · in-stream: `idle_timeout`, `max_duration`, `blocked`, `upstream_error` (the provider failed mid-stream; Gemini's SDK drops the error event, so any stream that ends without a finish reason is reported as this). Unexpected failures return 500 `server_error` with a generic message; details go to the function log only. Unknown `/api/*` paths on Vercel get the platform's 404.
 
 ## Rate limiting (`server/limits.mjs`)
 
@@ -63,7 +65,7 @@ Client IP: on Vercel (`VERCEL=1`) from `x-real-ip` / `x-forwarded-for`, which Ve
 | Concern | Mechanism |
 |---|---|
 | Access | Public by design. Anyone with the URL can chat; limits bound the cost. |
-| Secrets | `GEMINI_API_KEY` and the database URL are read only in `server/` (AI Studio Secrets, or Cloud Run / Vercel env vars). Never sent to the browser. |
+| Secrets | `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and the database URL are read only in `server/` (AI Studio Secrets, or Cloud Run / Vercel env vars). Never sent to the browser. |
 | Quota abuse | Per-IP minute/day windows, a global daily cap and per-IP concurrency, enforced globally via Postgres. |
 | Cross-site use | Non-GET requests need a same-origin `Origin` (or none) and a JSON body (`415` otherwise); no CORS headers are sent, so other sites' scripts can't call the API. |
 | Input | Body ≤ 2 MB, ≤ 200 messages / 600k chars, system prompt ≤ 8k, numeric params clamped, model must be in the allowlist. |
@@ -75,12 +77,14 @@ Tests: `server/api.test.mjs`.
 
 ## Models
 
-`server/models.mjs` lists free-tier models only (the key AI Studio injects may not have billing): Gemini 3.8 Flash (default), 3.5 Flash, 3.5 Flash-Lite, 3.1 Flash-Lite — each 1,048,576 input / 65,536 output tokens per the model pages (2026-10). `gemini-3.1-pro-preview` is paid-only.
+`server/models.mjs` lists free models only:
+- **Gemini** (free tier; the key AI Studio injects may not have billing): Gemini 3.8 Flash (default), 3.5 Flash, 3.5 Flash-Lite, 3.1 Flash-Lite — each 1,048,576 input / 65,536 output tokens per the model pages (2026-10). `gemini-3.1-pro-preview` is paid-only.
+- **OpenRouter** (`:free` models; a key without credits gets 50 requests/day across them, 1,000/day after buying $10 of credit): Nemotron 3 Super, Nemotron 3 Ultra, Qwen 3.8 27B, North Mini Code — limits from `/api/v1/models` (`context_length`, `top_provider.max_completion_tokens`), each verified with real requests on 2026-10-04. Rejected: `thinkingmachines/inkling:free` (403 "only available on agentic harnesses"); `google/gemma-4-31b-it:free` was rate-limited upstream when probed.
 
 ## Adding a model
 
-1. Check the model page on ai.google.dev for its input/output limits, thinking levels and free-tier availability.
-2. Add it to `MODELS` with `reasoning` (`"toggle"` + `thinkingOn`/`thinkingOff` if it accepts `minimal`, else `"always"`), `maxOutput` and `contextWindow`.
+1. Gemini: check the model page on ai.google.dev for its input/output limits, thinking levels and free-tier availability. OpenRouter: read `context_length`, `top_provider.max_completion_tokens` and `supported_parameters` from `GET https://openrouter.ai/api/v1/models`.
+2. Add it to `MODELS` with `provider`, `reasoning` (Gemini `"toggle"` needs `thinkingOn`/`thinkingOff`; OpenRouter `"toggle"` only if `reasoning: { enabled: false }` really removes reasoning), `maxOutput` and `contextWindow`.
 3. Verify with a real request:
    ```bash
    curl -s http://localhost:3000/api/chat -H "Content-Type: application/json" \

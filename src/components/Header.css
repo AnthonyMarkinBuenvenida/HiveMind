@@ -68,6 +68,20 @@
   font-weight: 500;
   color: var(--text-tertiary);
 }
+.model-group-head {
+  margin-top: 6px;
+  padding: 8px 10px 4px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+[role="group"]:first-child > .model-group-head {
+  margin-top: 0;
+  padding-top: 2px;
+  border-top: 0;
+}
 .model-option {
   display: flex;
   align-items: center;

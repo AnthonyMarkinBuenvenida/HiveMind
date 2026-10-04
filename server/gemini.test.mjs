@@ -137,12 +137,12 @@ describe("chat against the Gemini API", () => {
     reply = () => ({ sse: [text("partial"), busy], raw: JSON.stringify(busy, null, 2) });
     let { events } = await chat(ask());
     assert.deepEqual(events.at(-1), { type: "error", message: events.at(-1).message, code: "upstream_error" });
-    assert.match(events.at(-1).message, /high demand/);
+    assert.match(events.at(-1).message, /stopped partway through/);
     // The error event alone: the stream just ends without a finish reason.
     reply = () => ({ sse: [text("partial"), busy] });
     ({ events } = await chat(ask()));
     const err = events.find((e) => e.type === "error");
-    assert.match(err.message, /high demand/);
+    assert.match(err.message, /stopped partway through/);
   });
 
   test("a 503 before streaming is reported as high demand", async () => {

@@ -14,6 +14,13 @@ const REASONING_BADGE: Record<ModelInfo["reasoning"], string | null> = {
   none: null,
 };
 
+/** Models grouped by provider, in the server's order. */
+function groupByProvider(models: ModelInfo[]): [string, ModelInfo[]][] {
+  const groups = new Map<string, ModelInfo[]>();
+  for (const m of models) groups.set(m.provider, [...(groups.get(m.provider) ?? []), m]);
+  return [...groups];
+}
+
 function ModelPicker() {
   const { models, modelsStatus, modelsError, reloadModels, activeModel } = useServer();
   const { update } = useSettings();
@@ -25,6 +32,8 @@ function ModelPicker() {
   useEffect(() => {
     if (open) focusFirstItem(listRef.current, '[aria-checked="true"]');
   }, [open]);
+
+  const multipleProviders = new Set(models.map((m) => m.provider)).size > 1;
 
   if (modelsStatus === "loading") {
     return (
@@ -60,38 +69,47 @@ function ModelPicker() {
       <Popover open={open} onClose={close} anchorRef={anchorRef} width={340} className="model-popover">
         <div className="model-menu-head">Model</div>
         <div ref={listRef} role="menu" aria-label="Choose a model" className="menu" onKeyDown={menuKeyDown}>
-          {models.map((m) => {
-            const selected = m.id === activeModel.id;
-            const badge = REASONING_BADGE[m.reasoning];
-            return (
-              <button
-                key={m.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                className="model-option"
-                onClick={() => {
-                  update({ model: m.id });
-                  setOpen(false);
-                  anchorRef.current?.focus();
-                }}
-              >
-                <span className="model-option-main">
-                  <span className="model-option-title">
-                    {m.label}
-                    <span className="model-vendor">{m.vendor}</span>
-                    {badge && <span className="model-badge">{badge}</span>}
-                  </span>
-                  <span className="model-option-desc">{m.description}</span>
-                </span>
-                <span className="model-check" aria-hidden="true">
-                  {selected && <Icon name="check" size={16} />}
-                </span>
-              </button>
-            );
-          })}
+          {groupByProvider(models).map(([provider, group]) => (
+            <div key={provider} role="group" aria-label={provider}>
+              {multipleProviders && (
+                <div className="model-group-head" aria-hidden="true">
+                  {provider}
+                </div>
+              )}
+              {group.map((m) => {
+                const selected = m.id === activeModel.id;
+                const badge = REASONING_BADGE[m.reasoning];
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    className="model-option"
+                    onClick={() => {
+                      update({ model: m.id });
+                      setOpen(false);
+                      anchorRef.current?.focus();
+                    }}
+                  >
+                    <span className="model-option-main">
+                      <span className="model-option-title">
+                        {m.label}
+                        <span className="model-vendor">{m.vendor}</span>
+                        {badge && <span className="model-badge">{badge}</span>}
+                      </span>
+                      <span className="model-option-desc">{m.description}</span>
+                    </span>
+                    <span className="model-check" aria-hidden="true">
+                      {selected && <Icon name="check" size={16} />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </div>
-        <p className="model-menu-foot">Served by the Gemini API. Applies to your next message.</p>
+        <p className="model-menu-foot">Applies to your next message.</p>
       </Popover>
     </>
   );

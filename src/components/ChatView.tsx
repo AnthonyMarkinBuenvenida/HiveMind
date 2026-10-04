@@ -28,7 +28,7 @@ function EmptyState() {
         <p className="empty-sub">
           {activeModel ? (
             <>
-              You're chatting with <strong>{activeModel.label}</strong> on the Gemini API.
+              You're chatting with <strong>{activeModel.label}</strong> via {activeModel.provider}.
             </>
           ) : (
             "Loading available models…"
