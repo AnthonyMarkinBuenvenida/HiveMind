@@ -30,6 +30,8 @@ const MAX_MESSAGES = 200;
 const MAX_TOTAL_CHARS = 600_000;
 const MAX_SYSTEM_CHARS = 8_000;
 
+const MID_STREAM_FAILURE = "Gemini stopped partway through, usually because the model is under high demand. Try regenerating or pick another model.";
+
 // Gemini finish reasons that mean the response was withheld, not completed.
 const BLOCKED_REASONS = new Set(["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"]);
 
@@ -154,6 +156,7 @@ function mapUpstreamError(err) {
   if (status === 404) return new HttpError(502, "This model isn't available on the Gemini API right now. Pick another model.", "model_unavailable");
   if (status === 429) return new HttpError(429, "The Gemini API rate limit or quota was reached. Wait a moment and try again.", "rate_limited");
   if (status >= 400 && status < 500) return new HttpError(400, `The model rejected the request${detail ? `: ${detail}` : "."}`, "invalid_request");
+  if (status === 503) return new HttpError(503, "Gemini is under high demand right now. Try again in a moment or pick another model.", "upstream_busy");
   if (status >= 500) return new HttpError(502, `The Gemini API returned an error (${status}). Try again shortly.`, "upstream_error");
   return new HttpError(502, "Could not reach the Gemini API. Try again shortly.", "upstream_unreachable");
 }
@@ -336,6 +339,11 @@ async function streamCompletion(req, res, ai, release) {
         usage: { prompt: usage.promptTokenCount ?? null, completion: (usage.candidatesTokenCount ?? 0) + thoughts, reasoning: thoughts || null },
       });
     }
+    if (!finishReason && !abortCause) {
+      // Gemini reports a failure mid-stream (e.g. 503 high demand) as an error event that the SDK
+      // drops, so the stream just ends without a finish reason.
+      writeEvent(res, { type: "error", message: MID_STREAM_FAILURE, code: "upstream_error" });
+    }
     if (BLOCKED_REASONS.has(finishReason)) {
       writeEvent(res, { type: "error", message: `Gemini stopped this response (${finishReason.toLowerCase().replace(/_/g, " ")}). Try rephrasing your message.`, code: "blocked" });
     }
@@ -349,8 +357,10 @@ async function streamCompletion(req, res, ai, release) {
             ? `This demo stops a single response after ${Math.round(limitMs / 1000)} seconds. Use Continue to keep going.`
             : abortCause
               ? "The connection to the Gemini API was interrupted."
-              : mapUpstreamError(err).message;
-      writeEvent(res, { type: "error", message, code: abortCause ?? "stream_interrupted" });
+              : err instanceof ApiError
+                ? mapUpstreamError(err).message
+                : MID_STREAM_FAILURE; // the SDK fails to parse the error body Gemini sends after the dropped error event
+      writeEvent(res, { type: "error", message, code: abortCause ?? (err instanceof ApiError ? mapUpstreamError(err).code : "upstream_error") });
     }
   } finally {
     stopTimers();

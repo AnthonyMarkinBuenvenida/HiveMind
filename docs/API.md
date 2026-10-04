@@ -41,7 +41,7 @@ On success: `text/event-stream`, one JSON object per `data:` frame:
 **Cancellation**: when the client disconnects (Stop, closed tab) the SDK request is aborted (`abortSignal`) so Gemini stops generating. On Vercel this requires `supportsCancellation: true` on the function.
 
 ### Error codes
-`forbidden_origin` 403 · `not_found` 404 · `method_not_allowed` 405 · `unsupported_media_type` 415 · `missing_key` 503 · `invalid_json` / `invalid_request` / `invalid_model` 400 · `too_large` / `too_long` 413 · `rate_limited` / `too_many_streams` 429 (with `Retry-After`) · `auth_failed` / `model_unavailable` / `upstream_error` / `upstream_unreachable` 502 · `upstream_timeout` 504 · in-stream: `idle_timeout`, `max_duration`, `stream_interrupted`, `blocked`. Unexpected failures return 500 `server_error` with a generic message; details go to the function log only. Unknown `/api/*` paths on Vercel get the platform's 404.
+`forbidden_origin` 403 · `not_found` 404 · `method_not_allowed` 405 · `unsupported_media_type` 415 · `missing_key` 503 · `invalid_json` / `invalid_request` / `invalid_model` 400 · `too_large` / `too_long` 413 · `rate_limited` / `too_many_streams` 429 (with `Retry-After`) · `auth_failed` / `model_unavailable` / `upstream_error` / `upstream_unreachable` 502 · `upstream_busy` 503 (Gemini "high demand") · `upstream_timeout` 504 · in-stream: `idle_timeout`, `max_duration`, `blocked`, `upstream_error` (Gemini failed mid-stream — the SDK drops its error event, so a stream that ends without a finish reason is reported as this). Unexpected failures return 500 `server_error` with a generic message; details go to the function log only. Unknown `/api/*` paths on Vercel get the platform's 404.
 
 ## Rate limiting (`server/limits.mjs`)
 

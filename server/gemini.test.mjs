@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 Object.assign(process.env, { GEMINI_API_KEY: "test-key-not-real", RATE_LIMIT_CHAT_PER_MIN: "1000", LOG_REQUESTS: "false" });
 delete process.env.DATABASE_URL;
 
-/** Fake upstream. `reply(call)` returns { status, json } or { sse: [chunk, …] }. */
+/** Fake upstream. `reply(call)` returns { status, json } or { sse: [chunk, …], raw?: trailing text }. */
 let reply = () => ({ sse: [] });
 let calls = [];
 let fake;
@@ -16,6 +16,7 @@ let app;
 let base;
 
 const sse = (chunks) => chunks.map((c) => `data: ${JSON.stringify(c)}\r\n\r\n`).join("");
+const done = { candidates: [{ finishReason: "STOP" }] };
 const text = (t, thought = false) => ({ candidates: [{ content: { role: "model", parts: [{ text: t, ...(thought ? { thought: true } : {}) }] } }] });
 
 before(async () => {
@@ -27,7 +28,7 @@ before(async () => {
     const r = reply(call);
     if (r.sse) {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.end(sse(r.sse));
+      res.end(sse(r.sse) + (r.raw ?? ""));
     } else {
       res.writeHead(r.status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(r.json));
@@ -130,8 +131,29 @@ describe("chat against the Gemini API", () => {
     assert.match(err.message, /safety/);
   });
 
+  test("a mid-stream failure (high demand) is reported, not mistaken for a network error", async () => {
+    const busy = { error: { code: 503, message: "This model is currently experiencing high demand.", status: "UNAVAILABLE" } };
+    // As observed live: the error event, then a raw JSON body the SDK can't parse.
+    reply = () => ({ sse: [text("partial"), busy], raw: JSON.stringify(busy, null, 2) });
+    let { events } = await chat(ask());
+    assert.deepEqual(events.at(-1), { type: "error", message: events.at(-1).message, code: "upstream_error" });
+    assert.match(events.at(-1).message, /high demand/);
+    // The error event alone: the stream just ends without a finish reason.
+    reply = () => ({ sse: [text("partial"), busy] });
+    ({ events } = await chat(ask()));
+    const err = events.find((e) => e.type === "error");
+    assert.match(err.message, /high demand/);
+  });
+
+  test("a 503 before streaming is reported as high demand", async () => {
+    reply = () => ({ status: 503, json: { error: { code: 503, message: "This model is currently experiencing high demand.", status: "UNAVAILABLE" } } });
+    const res = await chat(ask());
+    assert.equal(res.status, 503);
+    assert.equal(res.json.error.code, "upstream_busy");
+  });
+
   test("thinking toggle sends the model's on/off level", async () => {
-    reply = () => ({ sse: [text("ok")] });
+    reply = () => ({ sse: [text("ok"), done] });
     await chat(ask({ model: "gemini-3.5-flash-lite", thinking: false }));
     await chat(ask({ model: "gemini-3.5-flash-lite", thinking: true }));
     assert.equal(calls[0].body.generationConfig.thinkingConfig.thinkingLevel.toLowerCase(), "minimal");
@@ -142,7 +164,7 @@ describe("chat against the Gemini API", () => {
     reply = (c) =>
       c.body.generationConfig.thinkingConfig.thinkingLevel
         ? { status: 400, json: { error: { code: 400, message: "Thinking level MINIMAL is not supported for this model.", status: "INVALID_ARGUMENT" } } }
-        : { sse: [text("ok")] };
+        : { sse: [text("ok"), done] };
     const { status, events } = await chat(ask({ model: "gemini-3.1-flash-lite", thinking: false }));
     assert.equal(status, 200);
     assert.equal(calls.length, 2);
@@ -154,7 +176,7 @@ describe("chat against the Gemini API", () => {
     reply = (c) =>
       c.body.generationConfig.maxOutputTokens > 32_768
         ? { status: 400, json: { error: { code: 400, message: "Unable to submit request because it has a maxOutputTokens value of 50000 but the supported range is from 1 (inclusive) to 32769 (exclusive).", status: "INVALID_ARGUMENT" } } }
-        : { sse: [text("ok")] };
+        : { sse: [text("ok"), done] };
     const { events } = await chat(ask({ maxTokens: 50_000 }));
     assert.equal(calls.length, 2);
     assert.equal(events[0].maxTokens, 32_768);
